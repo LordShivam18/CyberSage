@@ -5,12 +5,12 @@ import json
 import os
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -41,14 +41,12 @@ class LoginRequest(BaseModel):
 
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     username: str
     role: str
     disabled: bool
-
-    class Config:
-        from_attributes = True
-        orm_mode = True
 
 
 def _b64url(data: bytes) -> str:
@@ -90,7 +88,7 @@ def create_access_token(user: User) -> str:
         "sub": user.username,
         "role": user.role,
         "iat": now,
-        "exp": int((datetime.utcnow() + timedelta(minutes=settings.access_token_minutes)).timestamp()),
+        "exp": int((datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_minutes)).timestamp()),
     }
     signing_input = f"{_b64url(json.dumps(header, separators=(',', ':')).encode())}.{_b64url(json.dumps(payload, separators=(',', ':')).encode())}"
     signature = hmac.new(settings.jwt_secret.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest()

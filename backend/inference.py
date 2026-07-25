@@ -198,7 +198,7 @@ class ModelDetector:
         try:
             scaled_features = self.scaler.transform(input_df)
             sequence = np.array([scaled_features[0]] * 10)
-            sequence_tensor = torch.tensor([sequence], dtype=torch.float32)
+            sequence_tensor = torch.tensor(np.array([sequence]), dtype=torch.float32)
             with torch.no_grad():
                 output = self.model(sequence_tensor)
                 probabilities_tensor = torch.softmax(output, dim=1)[0]

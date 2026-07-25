@@ -36,6 +36,7 @@ frontend/.next/
 frontend/out/
 
 # Coverage / testing
+.pytest_cache/
 coverage/
 *.lcov
 

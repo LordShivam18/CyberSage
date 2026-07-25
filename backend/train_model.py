@@ -3,7 +3,7 @@ import json
 import math
 import os
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -234,12 +234,12 @@ def main():
 
     metadata = {
         "name": "ThreatTransformer",
-        "version": datetime.utcnow().strftime("%Y%m%d%H%M%S"),
+        "version": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
         "dataset_identifier": Path(args.data).name,
         "class_mapping": {"0": "BENIGN", "1": "ATTACK"},
         "feature_list": feature_list,
         "scaler_version": "MinMaxScaler-fit-on-training-split",
-        "training_date": datetime.utcnow().isoformat(),
+        "training_date": datetime.now(timezone.utc).isoformat(),
         "random_seed": RANDOM_SEED,
         "split_strategy": "stratified row split before scaling; sequences built separately per split",
         "sequence_length": SEQUENCE_LENGTH,

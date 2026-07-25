@@ -4,9 +4,17 @@ from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
 
 import backend.main as main_module
-from backend.auth import ROLE_ANALYST, create_access_token, create_user, decode_access_token, hash_password, verify_password
+from backend.auth import (
+    ROLE_ANALYST,
+    ROLE_AUDITOR,
+    create_access_token,
+    create_user,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
 from backend.database import Base, get_db
-from backend.models import Alert
+from backend.models import Alert, ThreatIntelCache
 from backend.pipeline import process_payload
 
 
@@ -61,6 +69,7 @@ def test_pipeline_creates_alert_and_incident_idempotently():
         assert first["incident"] is not None
         assert second["created"] is False
         assert db.query(Alert).count() == 1
+        assert db.query(ThreatIntelCache).count() >= 1
     finally:
         db.close()
 
@@ -89,5 +98,73 @@ def test_api_alert_pagination_and_filtering(monkeypatch):
             data = response.json()
             assert data["total"] == 1
             assert data["items"][0]["severity"] == "high"
+
+            predict_response = client.post(
+                "/predict",
+                json={
+                    "flow_duration": 83,
+                    "tot_fwd_pkts": 2,
+                    "tot_bwd_pkts": 2,
+                    "totlen_fwd_pkts": 12,
+                    "fwd_pkt_len_max": 6,
+                    "fwd_pkt_len_min": 6,
+                    "fwd_pkt_len_mean": 6.0,
+                    "bwd_pkt_len_max": 6,
+                    "flow_iat_mean": 27.6,
+                    "flow_iat_max": 80,
+                    "fwd_iat_tot": 83.0,
+                },
+            )
+            assert predict_response.status_code == 200
+            assert set(predict_response.json()) == {"prediction", "probability"}
+    finally:
+        main_module.app.dependency_overrides.clear()
+
+
+def test_api_role_permissions_for_alert_updates(monkeypatch):
+    object.__setattr__(main_module.settings, "auto_migrate", False)
+    SessionTesting = make_session()
+    db = SessionTesting()
+    analyst = create_user(db, "role-analyst", "correct-horse-battery", ROLE_ANALYST)
+    auditor = create_user(db, "role-auditor", "correct-horse-battery", ROLE_AUDITOR)
+    alert = Alert(
+        prediction="ATTACK",
+        probability=0.9,
+        details="{}",
+        severity="high",
+        status="new",
+        classification="ATTACK",
+    )
+    db.add(alert)
+    db.commit()
+    alert_id = alert.id
+    analyst_token = create_access_token(analyst)
+    auditor_token = create_access_token(auditor)
+    db.close()
+
+    def override_get_db():
+        session = SessionTesting()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    main_module.app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestClient(main_module.app) as client:
+            auditor_response = client.patch(
+                f"/api/v1/alerts/{alert_id}",
+                json={"status": "acknowledged"},
+                headers={"Authorization": f"Bearer {auditor_token}"},
+            )
+            assert auditor_response.status_code == 403
+
+            analyst_response = client.patch(
+                f"/api/v1/alerts/{alert_id}",
+                json={"status": "acknowledged"},
+                headers={"Authorization": f"Bearer {analyst_token}"},
+            )
+            assert analyst_response.status_code == 200
+            assert analyst_response.json()["status"] == "acknowledged"
     finally:
         main_module.app.dependency_overrides.clear()

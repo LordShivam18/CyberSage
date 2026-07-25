@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 SCHEMA_VERSION = "ndr.event.v1"
@@ -25,6 +25,8 @@ LEGACY_FEATURES = [
 
 
 class NormalizedNetworkEvent(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     event_id: str
     timestamp: datetime
     sensor_type: str
@@ -44,12 +46,8 @@ class NormalizedNetworkEvent(BaseModel):
     device_id: Optional[str] = None
     raw_event_reference: Optional[str] = None
     schema_version: str = SCHEMA_VERSION
-    ingestion_timestamp: datetime = Field(default_factory=lambda: datetime.utcnow())
+    ingestion_timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     raw_event: Dict[str, Any] = Field(default_factory=dict)
-
-    class Config:
-        from_attributes = True
-        orm_mode = True
 
     def to_db_dict(self) -> Dict[str, Any]:
         data = _model_dump(self)
@@ -75,7 +73,7 @@ def _json_ready(value):
 
 def _parse_datetime(value: Any) -> datetime:
     if value is None:
-        return datetime.utcnow()
+        return datetime.now(timezone.utc).replace(tzinfo=None)
     if isinstance(value, datetime):
         if value.tzinfo:
             return value.astimezone(timezone.utc).replace(tzinfo=None)
@@ -84,7 +82,7 @@ def _parse_datetime(value: Any) -> datetime:
         return datetime.fromtimestamp(float(value), tz=timezone.utc).replace(tzinfo=None)
     text = str(value).strip()
     if not text:
-        return datetime.utcnow()
+        return datetime.now(timezone.utc).replace(tzinfo=None)
     try:
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
@@ -93,7 +91,7 @@ def _parse_datetime(value: Any) -> datetime:
             parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
         return parsed
     except ValueError:
-        return datetime.utcnow()
+        return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _number(value: Any) -> Optional[float]:
@@ -144,7 +142,7 @@ def normalize_synthetic_event(
     return NormalizedNetworkEvent(
         event_id=event_id,
         timestamp=_parse_datetime(payload.get("timestamp")),
-        sensor_type="synthetic",
+        sensor_type=str(payload.get("sensor_type") or "synthetic"),
         source_ip=payload.get("source_ip") or payload.get("src_ip"),
         source_port=_integer(payload.get("source_port") or payload.get("src_port")),
         destination_ip=payload.get("destination_ip") or payload.get("dest_ip") or payload.get("dst_ip"),

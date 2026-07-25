@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
@@ -41,7 +42,14 @@ from .serializers import alert_to_dict, detection_to_dict, event_to_dict, incide
 from .threat_intel_service import threat_intel_service
 
 
-app = FastAPI(title=settings.app_name, version="1.0.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if settings.auto_migrate:
+        run_migrations()
+    yield
+
+
+app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,12 +71,6 @@ def _dump_model(model):
     return model.dict()
 
 
-@app.on_event("startup")
-async def startup_event():
-    if settings.auto_migrate:
-        run_migrations()
-
-
 @app.get("/api/v1/health")
 def health():
     return {"status": "ok", "service": settings.app_name}
@@ -78,14 +80,16 @@ def health():
 def ready(db: Session = Depends(get_db)):
     database_ok = True
     database_error = None
+    revision = None
     try:
         db.execute(text("SELECT 1"))
+        revision = current_revision()
     except Exception as exc:
         database_ok = False
         database_error = str(exc)
     return {
         "ready": database_ok and rule_engine.error is None,
-        "database": {"ok": database_ok, "error": database_error, "revision": current_revision()},
+        "database": {"ok": database_ok, "error": database_error, "revision": revision},
         "model": model_detector.status(),
         "anomaly": anomaly_detector.status(),
         "rules": rule_engine.status(),
@@ -345,11 +349,12 @@ def metrics(db: Session = Depends(get_db)):
         .all()
     )
     active_incidents = db.query(Incident).filter(Incident.status.in_(["new", "triaged", "investigating", "contained"])).count()
+    detections = db.query(Detection).all()
     detection_sources = {
-        "hybrid": db.query(Detection).count(),
-        "rules": db.query(Detection).filter(Detection.triggered_rules != []).count(),
-        "ml_model": db.query(Detection).filter(Detection.confidence > 0).count(),
-        "anomaly": db.query(Detection).filter(Detection.anomaly_score >= 0.6).count(),
+        "hybrid": len(detections),
+        "rules": sum(1 for detection in detections if detection.triggered_rules),
+        "ml_model": sum(1 for detection in detections if (detection.confidence or 0) > 0),
+        "anomaly": sum(1 for detection in detections if (detection.anomaly_score or 0) >= 0.6),
     }
     return {
         "active_incidents": active_incidents,

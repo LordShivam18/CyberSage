@@ -1,6 +1,6 @@
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -63,9 +63,9 @@ def main():
         json.dump(
             {
                 "name": "IsolationForest",
-                "version": datetime.utcnow().strftime("%Y%m%d%H%M%S"),
+                "version": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
                 "feature_list": LEGACY_FEATURES,
-                "training_date": datetime.utcnow().isoformat(),
+                "training_date": datetime.now(timezone.utc).isoformat(),
                 "rows": len(rows),
                 "source": args.jsonl or "built-in synthetic fixture",
                 "note": "This artifact is for lightweight demo/testing, not production baselining.",

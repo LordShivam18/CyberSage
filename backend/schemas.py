@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class NetworkFlow(BaseModel):
@@ -19,16 +19,13 @@ class NetworkFlow(BaseModel):
 
 
 class AlertResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     timestamp: datetime
     prediction: str
     probability: float
     details: str
-
-    class Config:
-        from_attributes = True
-        orm_mode = True
-
 
 class TelemetryIngestRequest(BaseModel):
     payload: dict

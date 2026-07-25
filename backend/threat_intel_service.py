@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -104,7 +104,7 @@ class ThreatIntelService:
     def _lookup_cache(self, indicator: str, indicator_type: str, db: Optional[Session]) -> List[Dict[str, Any]]:
         if db is None:
             return []
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         rows = (
             db.query(ThreatIntelCache)
             .filter(
@@ -130,7 +130,9 @@ class ThreatIntelService:
     def _store_cache(self, result: Dict[str, Any], db: Optional[Session]) -> None:
         if db is None:
             return
-        expires_at = datetime.utcnow() + timedelta(seconds=settings.threat_intel_cache_ttl_seconds)
+        expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+            seconds=settings.threat_intel_cache_ttl_seconds
+        )
         db.add(
             ThreatIntelCache(
                 indicator=result["indicator"],
