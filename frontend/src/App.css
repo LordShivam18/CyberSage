@@ -1,0 +1,169 @@
+/* Import Google Font */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* --- Color Palette & Global Styles --- */
+:root {
+  --primary: #00f2ff; /* neon cyan */
+  --secondary: #7d2ae8; /* deep purple */
+  --bg-dark: #0d0d12;
+  --bg-card: rgba(27, 27, 36, 0.5); /* Semi-transparent card background */
+  --text-light: #f0f0f5;
+  --text-secondary: #a9b1d6;
+  --border-color: rgba(0, 242, 255, 0.2);
+  --success: #9ece6a;
+  --error: #f7768e;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', sans-serif;
+  background-color: var(--bg-dark);
+  color: var(--text-light);
+  
+}
+
+/* --- Keyframe Animations --- */
+@keyframes pulse {
+  0% { text-shadow: 0 0 5px rgba(0, 242, 255, 0.5); }
+  50% { text-shadow: 0 0 20px rgba(0, 242, 255, 1); }
+  100% { text-shadow: 0 0 5px rgba(0, 242, 255, 0.5); }
+}
+
+/* --- Main App Layout --- */
+.App-header {
+  background: linear-gradient(90deg, #1a1b26, #0d0d12);
+  padding: 15px 30px;
+  color: white;
+  margin-bottom: 2rem;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 15px;
+}
+
+
+
+.App-header h1 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--error); /* This makes the text red */
+}
+
+
+/* --- Dashboard & Card Styling --- */
+.dashboard {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 2rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  align-items: start;
+}
+
+.alerts-container, .prediction-form-container {
+  /* --- Glass Effect --- */
+  background: var(--bg-card);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-color);
+  border-radius: 15px;
+  padding: 1.5rem 2rem;
+  /* --- Glow Effect --- */
+  box-shadow: 0 4px 20px rgba(0, 242, 255, 0.1);
+}
+
+h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 1.4rem;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 1rem;
+  margin-bottom: 1.5rem;
+  animation: pulse 3s infinite;
+}
+
+/* --- Table Styling --- */
+.alerts-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.alerts-table th, .alerts-table td {
+  padding: 0.8rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+.alerts-table th {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* --- Form, Input & Button Styling --- */
+.form-field label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+  display: block;
+}
+
+.form-field input {
+  width: 100%;
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background-color: rgba(13, 13, 18, 0.5);
+  color: var(--text-light);
+  font-size: 1rem;
+  box-sizing: border-box;
+}
+
+.form-field input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 15px rgba(0, 242, 255, 0.3);
+}
+
+button {
+  width: 100%;
+  padding: 0.8rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--bg-dark);
+  cursor: pointer;
+  background: linear-gradient(90deg, var(--primary), var(--secondary));
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+button:hover:not(:disabled) {
+  transform: scale(1.03);
+  box-shadow: 0 4px 20px rgba(0, 242, 255, 0.4);
+}
+
+/* --- Prediction Result Styling --- */
+.prediction-result {
+  padding: 1rem;
+  border-radius: 8px;
+  border-left-width: 5px;
+  border-left-style: solid;
+}
+.prediction-result.benign {
+  background-color: rgba(158, 206, 106, 0.1);
+  border-color: var(--success);
+  color: var(--success);
+}
+.prediction-result.attack {
+  background-color: rgba(247, 118, 142, 0.1);
+  border-color: var(--error);
+  color: var(--error);
+}
+.error-message {
+  color: var(--error);
+}

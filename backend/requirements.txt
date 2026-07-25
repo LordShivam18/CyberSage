@@ -1,0 +1,19 @@
+# Core Data Science Libraries
+pandas
+numpy
+scikit-learn
+joblib
+
+# PyTorch (CPU version)
+torch
+
+# Backend API Framework
+fastapi
+uvicorn[standard]
+
+# Real-time Data Streaming
+kafka-python
+
+# Database Connector
+psycopg2-binary
+SQLAlchemy
