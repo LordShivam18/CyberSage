@@ -1,0 +1,81 @@
+{
+  "rules": [
+    {
+      "id": "SUSPICIOUS_OUTBOUND_VOLUME",
+      "name": "Suspicious outbound byte volume",
+      "description": "Flags flows with unusually high bytes sent by the source.",
+      "severity": "high",
+      "conditions": {
+        "field": "bytes_sent",
+        "operator": "gte",
+        "threshold": 50000
+      },
+      "mitre_techniques": ["T1041"],
+      "investigation_actions": [
+        "Check whether the destination is approved for large data transfers.",
+        "Review recent authentication and process activity on the source host."
+      ]
+    },
+    {
+      "id": "HIGH_CONNECTION_RATE",
+      "name": "Abnormally high connection rate",
+      "description": "Flags a source with many recent flows in the correlation window.",
+      "severity": "medium",
+      "conditions": {
+        "field": "source_connection_count_5m",
+        "operator": "context_gte",
+        "threshold": 100
+      },
+      "mitre_techniques": ["T1046"],
+      "investigation_actions": [
+        "Group flows by destination and service to confirm whether this is expected scanning."
+      ]
+    },
+    {
+      "id": "PORT_SCAN_PATTERN",
+      "name": "Port scanning pattern",
+      "description": "Flags a source that touches many destination ports in a short window.",
+      "severity": "high",
+      "conditions": {
+        "field": "unique_destination_ports_5m",
+        "operator": "context_gte",
+        "threshold": 20
+      },
+      "mitre_techniques": ["T1046"],
+      "investigation_actions": [
+        "Confirm whether the source is an approved vulnerability scanner.",
+        "Inspect denied connections and follow-on successful sessions."
+      ]
+    },
+    {
+      "id": "REPEATED_AUTH_FAILURES",
+      "name": "Repeated authentication failures",
+      "description": "Flags telemetry that carries repeated authentication failure counts.",
+      "severity": "medium",
+      "conditions": {
+        "field": "auth_failure_count",
+        "operator": "gte",
+        "threshold": 5
+      },
+      "mitre_techniques": ["T1110"],
+      "investigation_actions": [
+        "Review account lockout and successful login events around the same time."
+      ]
+    },
+    {
+      "id": "KNOWN_MALICIOUS_INDICATOR",
+      "name": "Known malicious indicator match",
+      "description": "Flags local or cached threat-intelligence matches with meaningful confidence.",
+      "severity": "critical",
+      "conditions": {
+        "operator": "threat_intel_match",
+        "min_confidence": 0.7
+      },
+      "mitre_techniques": ["T1071"],
+      "investigation_actions": [
+        "Validate source provenance before escalation.",
+        "Search for other flows sharing the matched indicator."
+      ]
+    }
+  ]
+}

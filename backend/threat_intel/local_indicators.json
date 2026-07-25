@@ -1,0 +1,12 @@
+{
+  "indicators": [
+    {
+      "value": "203.0.113.66",
+      "type": "ip",
+      "confidence": 0.8,
+      "source": "local_demo_feed",
+      "description": "Reserved documentation address used as a deterministic demo suspicious indicator.",
+      "tags": ["demo", "lab-only"]
+    }
+  ]
+}

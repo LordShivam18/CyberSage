@@ -17,3 +17,7 @@ kafka-python
 # Database Connector
 psycopg2-binary
 SQLAlchemy
+
+# Testing
+pytest
+httpx

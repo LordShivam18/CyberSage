@@ -1,0 +1,1 @@
+{"timestamp":"2026-01-01T00:00:02.000000+0000","event_type":"flow","flow_id":123456,"src_ip":"10.0.0.30","src_port":51515,"dest_ip":"198.51.100.40","dest_port":443,"proto":"TCP","flow":{"age":3,"bytes_toserver":90000,"bytes_toclient":800,"pkts_toserver":100,"pkts_toclient":10},"tcp":{"tcp_flags":"1b"}}

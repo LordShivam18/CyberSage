@@ -12,7 +12,7 @@ export const useAlerts = (refreshInterval = 5000) => {
         const getAlerts = async () => {
             try {
                 const data = await fetchAlerts();
-                setAlerts(data);
+                setAlerts(Array.isArray(data) ? data : []);
                 setError(null);
             } catch (err) {
                 console.error("Failed to fetch alerts:", err);

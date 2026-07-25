@@ -1,230 +1,432 @@
-# backend/main.py
-
-import os
-import json
-import joblib
-import asyncio
-import pandas as pd
-import torch
-import torch.nn as nn
-import math
-import numpy as np
-from fastapi import FastAPI, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
-from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.ext.declarative import declarative_base
-from kafka import KafkaConsumer
 from datetime import datetime
-from typing import List
+from typing import Optional
 
-# ----------------------------
-# Local Configuration
-# ----------------------------
-DATABASE_URL = "postgresql://postgres:postgres@localhost/threatdb"
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-KAFKA_TOPIC = "network_traffic"
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func, text
+from sqlalchemy.orm import Session
 
-# ----------------------------
-# FastAPI App Initialization
-# ----------------------------
-app = FastAPI(title="AI Cybersecurity Threat Detector API")
+from .anomaly import anomaly_detector
+from .auth import (
+    ROLE_ADMIN,
+    ROLE_ANALYST,
+    ROLE_AUDITOR,
+    ROLE_RESPONDER,
+    LoginRequest,
+    TokenResponse,
+    audit_event,
+    auth_rate_limiter,
+    authenticate_user,
+    create_access_token,
+    predict_rate_limiter,
+    require_roles,
+)
+from .config import settings
+from .database import get_db
+from .inference import model_detector, run_prediction
+from .migrations.runner import current_revision, run_migrations
+from .models import Alert, AuditEvent, Detection, Incident, NormalizedEvent
+from .pipeline import process_payload
+from .realtime import manager
+from .rules_engine import rule_engine
+from .schemas import (
+    AlertResponse,
+    AlertUpdateRequest,
+    IncidentUpdateRequest,
+    NetworkFlow,
+    TelemetryIngestRequest,
+    ThreatIntelLookupRequest,
+)
+from .serializers import alert_to_dict, detection_to_dict, event_to_dict, incident_to_dict
+from .threat_intel_service import threat_intel_service
 
-# ----------------------------
-# CORS Middleware
-# ----------------------------
-origins = [
-    "http://localhost:3000",      # Local frontend
-    "http://192.168.29.59:3000",  # Frontend via local network IP
-]
+
+app = FastAPI(title=settings.app_name, version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],   # Allow all HTTP methods
-    allow_headers=["*"],   # Allow all headers
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-# ----------------------------
-# Transformer Model Definition
-# ----------------------------
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() *
-                             (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
 
-    def forward(self, x):
-        return x + self.pe[:x.size(0), :]
+ALERT_STATUSES = {"new", "acknowledged", "investigating", "resolved", "false_positive"}
+INCIDENT_STATUSES = {"new", "triaged", "investigating", "contained", "resolved", "false_positive"}
+PRIORITIES = {"low", "medium", "high", "critical"}
 
-class ThreatTransformer(nn.Module):
-    def __init__(self, input_dim, d_model, nhead, nlayers, num_classes=2):
-        super(ThreatTransformer, self).__init__()
-        self.d_model = d_model
-        self.encoder = nn.Linear(input_dim, d_model)
-        self.pos_encoder = PositionalEncoding(d_model)
-        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, nlayers)
-        self.decoder = nn.Linear(d_model, num_classes)
 
-    def forward(self, src):
-        src = self.encoder(src) * math.sqrt(self.d_model)
-        src = self.pos_encoder(src)
-        output = self.transformer_encoder(src)
-        output = output[:, -1, :]
-        output = self.decoder(output)
-        return output
+def _dump_model(model):
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
 
-# ----------------------------
-# Load Model and Scaler
-# ----------------------------
-try:
-    scaler = joblib.load("./results/scaler.gz")
 
-    INPUT_DIM = 78  # Must match training script
-    D_MODEL = 128
-    N_HEAD = 8
-    N_LAYERS = 3
-
-    model = ThreatTransformer(INPUT_DIM, D_MODEL, N_HEAD, N_LAYERS)
-    model.load_state_dict(torch.load("./results/model/transformer_model.pth"))
-    model.eval()
-
-    print("✅ Transformer model and scaler loaded successfully!")
-
-except FileNotFoundError:
-    print("🛑 Error: Model or scaler not found. Predictions will be disabled.")
-    model, scaler = None, None
-
-# ----------------------------
-# Database Setup
-# ----------------------------
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-class Alert(Base):
-    __tablename__ = "alerts"
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    prediction = Column(String, index=True)
-    probability = Column(Float)
-    details = Column(String)
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# ----------------------------
-# Prediction Logic
-# ----------------------------
-def run_prediction(flow_dict: dict):
-    if not model or not scaler:
-        return "ERROR", 0.0
-
-    feature_names = scaler.get_feature_names_out()
-    input_df = pd.DataFrame([flow_dict])
-    for col in feature_names:
-        if col not in input_df.columns:
-            input_df[col] = 0
-    input_df = input_df[feature_names]
-
-    scaled_features = scaler.transform(input_df)
-
-    # Dummy sequence length 10
-    sequence = np.array([scaled_features[0]] * 10)
-    sequence_tensor = torch.tensor([sequence], dtype=torch.float32)
-
-    with torch.no_grad():
-        output = model(sequence_tensor)
-        probabilities = torch.softmax(output, dim=1)
-        confidence, predicted_class = torch.max(probabilities, 1)
-
-    result_label = "BENIGN" if predicted_class.item() == 0 else "ATTACK"
-    return result_label, confidence.item()
-
-# ----------------------------
-# Kafka Consumer
-# ----------------------------
-async def consume():
-    consumer = KafkaConsumer(
-        KAFKA_TOPIC,
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        value_deserializer=lambda m: json.loads(m.decode('ascii')),
-        auto_offset_reset='earliest',
-        group_id='threat-detector-group'
-    )
-    print("📡 Kafka consumer started...")
-    db = SessionLocal()
-    try:
-        for message in consumer:
-            msg_data = message.value
-            prediction, probability = run_prediction(msg_data)
-            if prediction == "ATTACK":
-                alert = Alert(
-                    prediction=prediction,
-                    probability=probability,
-                    details=json.dumps(msg_data)
-                )
-                db.add(alert)
-                db.commit()
-                print(f"🚨 Attack detected! Confidence: {probability:.2f}")
-    finally:
-        db.close()
-        consumer.close()
-
-# ----------------------------
-# Startup Event
-# ----------------------------
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Application starting up...")
-    Base.metadata.create_all(bind=engine)
-    print("📂 Database tables ready.")
-    asyncio.create_task(consume())
+    if settings.auto_migrate:
+        run_migrations()
 
-# ----------------------------
-# API Endpoints
-# ----------------------------
-class AlertResponse(BaseModel):
-    id: int
-    timestamp: datetime
-    prediction: str
-    probability: float
-    details: str
 
-    class Config:
-        from_attributes = True
+@app.get("/api/v1/health")
+def health():
+    return {"status": "ok", "service": settings.app_name}
 
-class NetworkFlow(BaseModel):
-    flow_duration: float
-    tot_fwd_pkts: float
-    tot_bwd_pkts: float
-    totlen_fwd_pkts: float
-    fwd_pkt_len_max: float
-    fwd_pkt_len_min: float
-    fwd_pkt_len_mean: float
-    bwd_pkt_len_max: float
-    flow_iat_mean: float
-    flow_iat_max: float
-    fwd_iat_tot: float
 
-@app.post("/predict")
+@app.get("/api/v1/ready")
+def ready(db: Session = Depends(get_db)):
+    database_ok = True
+    database_error = None
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as exc:
+        database_ok = False
+        database_error = str(exc)
+    return {
+        "ready": database_ok and rule_engine.error is None,
+        "database": {"ok": database_ok, "error": database_error, "revision": current_revision()},
+        "model": model_detector.status(),
+        "anomaly": anomaly_detector.status(),
+        "rules": rule_engine.status(),
+        "kafka_consumer": "separate worker process; start with python -m backend.worker",
+    }
+
+
+@app.post("/api/v1/auth/login", response_model=TokenResponse, dependencies=[Depends(auth_rate_limiter)])
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    user = authenticate_user(db, request.username, request.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    audit_event(db, "login", "user", user.username, user=user)
+    db.commit()
+    return TokenResponse(
+        access_token=create_access_token(user),
+        username=user.username,
+        role=user.role,
+    )
+
+
+@app.post("/predict", dependencies=[Depends(predict_rate_limiter)])
 def predict_flow(flow: NetworkFlow):
-    prediction, probability = run_prediction(flow.dict())
+    prediction, probability = run_prediction(_dump_model(flow))
     return {"prediction": prediction, "probability": probability}
 
-@app.get("/alerts", response_model=List[AlertResponse])
-def get_alerts(db: Session = Depends(get_db)):
+
+@app.get("/alerts", response_model=list[AlertResponse])
+def get_legacy_alerts(db: Session = Depends(get_db)):
     return db.query(Alert).order_by(Alert.timestamp.desc()).limit(100).all()
+
+
+@app.post(
+    "/api/v1/events",
+    dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_ANALYST, ROLE_RESPONDER))],
+)
+async def ingest_event(request: TelemetryIngestRequest, db: Session = Depends(get_db)):
+    result = process_payload(
+        request.payload,
+        db,
+        source_hint=request.source_hint,
+        raw_reference=request.raw_reference,
+    )
+    db.commit()
+    response = {
+        "event": event_to_dict(result["event"]),
+        "detection": detection_to_dict(result["detection"]),
+        "alert": alert_to_dict(result["alert"]) if result["alert"] else None,
+        "incident": incident_to_dict(result["incident"]) if result["incident"] else None,
+        "created": result["created"],
+    }
+    if result["alert"]:
+        await manager.broadcast({"type": "alert.created", "alert": response["alert"]})
+    if result["incident"]:
+        await manager.broadcast({"type": "incident.updated", "incident": response["incident"]})
+    return response
+
+
+@app.get("/api/v1/events")
+def list_events(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    sensor_type: Optional[str] = None,
+    protocol: Optional[str] = None,
+    source_ip: Optional[str] = None,
+    destination_ip: Optional[str] = None,
+    destination_port: Optional[int] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(NormalizedEvent)
+    if sensor_type:
+        query = query.filter(NormalizedEvent.sensor_type == sensor_type)
+    if protocol:
+        query = query.filter(NormalizedEvent.protocol == protocol.upper())
+    if source_ip:
+        query = query.filter(NormalizedEvent.source_ip == source_ip)
+    if destination_ip:
+        query = query.filter(NormalizedEvent.destination_ip == destination_ip)
+    if destination_port:
+        query = query.filter(NormalizedEvent.destination_port == destination_port)
+    if start:
+        query = query.filter(NormalizedEvent.timestamp >= start)
+    if end:
+        query = query.filter(NormalizedEvent.timestamp <= end)
+    total = query.count()
+    rows = query.order_by(NormalizedEvent.timestamp.desc()).offset(offset).limit(limit).all()
+    return {"total": total, "limit": limit, "offset": offset, "items": [event_to_dict(row) for row in rows]}
+
+
+@app.get("/api/v1/detections")
+def list_detections(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    severity: Optional[str] = None,
+    classification: Optional[str] = None,
+    detection_source: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Detection)
+    if severity:
+        query = query.filter(Detection.severity == severity)
+    if classification:
+        query = query.filter(Detection.classification == classification)
+    if detection_source:
+        query = query.filter(Detection.detection_source == detection_source)
+    total = query.count()
+    rows = query.order_by(Detection.created_at.desc()).offset(offset).limit(limit).all()
+    return {"total": total, "limit": limit, "offset": offset, "items": [detection_to_dict(row) for row in rows]}
+
+
+@app.get("/api/v1/alerts")
+def list_alerts(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    severity: Optional[str] = None,
+    status: Optional[str] = None,
+    classification: Optional[str] = None,
+    source_ip: Optional[str] = None,
+    destination_ip: Optional[str] = None,
+    detection_source: Optional[str] = None,
+    mitre_technique: Optional[str] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Alert)
+    if severity:
+        query = query.filter(Alert.severity == severity)
+    if status:
+        query = query.filter(Alert.status == status)
+    if classification:
+        query = query.filter(Alert.classification == classification)
+    if source_ip:
+        query = query.filter(Alert.source_ip == source_ip)
+    if destination_ip:
+        query = query.filter(Alert.destination_ip == destination_ip)
+    if detection_source:
+        query = query.filter(Alert.detection_source == detection_source)
+    if start:
+        query = query.filter(Alert.timestamp >= start)
+    if end:
+        query = query.filter(Alert.timestamp <= end)
+    rows = query.order_by(Alert.timestamp.desc()).all()
+    if mitre_technique:
+        rows = [row for row in rows if mitre_technique in (row.mitre_techniques or [])]
+    total = len(rows)
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [alert_to_dict(row) for row in rows[offset : offset + limit]],
+    }
+
+
+@app.get("/api/v1/alerts/{alert_id}")
+def get_alert(alert_id: int, db: Session = Depends(get_db)):
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return alert_to_dict(alert, include_detection=True)
+
+
+@app.patch(
+    "/api/v1/alerts/{alert_id}",
+    dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_ANALYST, ROLE_RESPONDER))],
+)
+async def update_alert(alert_id: int, request: AlertUpdateRequest, db: Session = Depends(get_db), user=Depends(require_roles(ROLE_ADMIN, ROLE_ANALYST, ROLE_RESPONDER))):
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    data = _dump_model(request)
+    if data.get("status") and data["status"] not in ALERT_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {sorted(ALERT_STATUSES)}")
+    if data.get("priority") and data["priority"] not in PRIORITIES:
+        raise HTTPException(status_code=422, detail=f"priority must be one of {sorted(PRIORITIES)}")
+    for field, value in data.items():
+        if value is not None:
+            setattr(alert, field, value)
+    audit_event(db, "alert_updated", "alert", str(alert.id), data, user=user)
+    db.commit()
+    db.refresh(alert)
+    payload = alert_to_dict(alert, include_detection=True)
+    await manager.broadcast({"type": "alert.updated", "alert": payload})
+    return payload
+
+
+@app.get("/api/v1/incidents")
+def list_incidents(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    status: Optional[str] = None,
+    severity: Optional[str] = None,
+    classification: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Incident)
+    if status:
+        query = query.filter(Incident.status == status)
+    if severity:
+        query = query.filter(Incident.severity == severity)
+    if classification:
+        query = query.filter(Incident.classification == classification)
+    total = query.count()
+    rows = query.order_by(Incident.last_seen.desc()).offset(offset).limit(limit).all()
+    return {"total": total, "limit": limit, "offset": offset, "items": [incident_to_dict(row) for row in rows]}
+
+
+@app.get("/api/v1/incidents/{incident_id}")
+def get_incident(incident_id: int, db: Session = Depends(get_db)):
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return incident_to_dict(incident, include_alerts=True)
+
+
+@app.patch(
+    "/api/v1/incidents/{incident_id}",
+    dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_RESPONDER))],
+)
+async def update_incident(
+    incident_id: int,
+    request: IncidentUpdateRequest,
+    db: Session = Depends(get_db),
+    user=Depends(require_roles(ROLE_ADMIN, ROLE_RESPONDER)),
+):
+    incident = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    data = _dump_model(request)
+    if data.get("status") and data["status"] not in INCIDENT_STATUSES:
+        raise HTTPException(status_code=422, detail=f"status must be one of {sorted(INCIDENT_STATUSES)}")
+    if data.get("priority") and data["priority"] not in PRIORITIES:
+        raise HTTPException(status_code=422, detail=f"priority must be one of {sorted(PRIORITIES)}")
+    for field, value in data.items():
+        if value is not None:
+            setattr(incident, field, value)
+    audit_event(db, "incident_updated", "incident", str(incident.id), data, user=user)
+    db.commit()
+    db.refresh(incident)
+    payload = incident_to_dict(incident, include_alerts=True)
+    await manager.broadcast({"type": "incident.updated", "incident": payload})
+    return payload
+
+
+@app.get("/api/v1/metrics")
+def metrics(db: Session = Depends(get_db)):
+    total_alerts = db.query(Alert).count()
+    false_positive = db.query(Alert).filter(Alert.status == "false_positive").count()
+    alerts_by_severity = dict(db.query(Alert.severity, func.count(Alert.id)).group_by(Alert.severity).all())
+    top_attack_classes = dict(
+        db.query(Alert.classification, func.count(Alert.id))
+        .group_by(Alert.classification)
+        .order_by(func.count(Alert.id).desc())
+        .limit(10)
+        .all()
+    )
+    active_incidents = db.query(Incident).filter(Incident.status.in_(["new", "triaged", "investigating", "contained"])).count()
+    detection_sources = {
+        "hybrid": db.query(Detection).count(),
+        "rules": db.query(Detection).filter(Detection.triggered_rules != []).count(),
+        "ml_model": db.query(Detection).filter(Detection.confidence > 0).count(),
+        "anomaly": db.query(Detection).filter(Detection.anomaly_score >= 0.6).count(),
+    }
+    return {
+        "active_incidents": active_incidents,
+        "total_alerts": total_alerts,
+        "alerts_by_severity": alerts_by_severity,
+        "top_attack_classes": top_attack_classes,
+        "top_targeted_assets": dict(
+            db.query(Alert.destination_ip, func.count(Alert.id))
+            .filter(Alert.destination_ip.isnot(None))
+            .group_by(Alert.destination_ip)
+            .order_by(func.count(Alert.id).desc())
+            .limit(10)
+            .all()
+        ),
+        "detection_sources": detection_sources,
+        "false_positive_rate": round(false_positive / total_alerts, 4) if total_alerts else 0.0,
+        "model_monitoring": {
+            "model": model_detector.status(),
+            "anomaly": anomaly_detector.status(),
+            "rules": rule_engine.status(),
+            "prediction_distribution": top_attack_classes,
+            "inference_latency_ms_latest": db.query(func.avg(Detection.latency_ms)).scalar() or 0.0,
+            "drift": "placeholder: no production baseline has been established",
+        },
+    }
+
+
+@app.get("/api/v1/model/status")
+def model_status():
+    return {
+        "model": model_detector.status(),
+        "anomaly": anomaly_detector.status(),
+        "rules": rule_engine.status(),
+    }
+
+
+@app.post(
+    "/api/v1/threat-intel/lookup",
+    dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_ANALYST, ROLE_RESPONDER, ROLE_AUDITOR))],
+)
+def threat_intel_lookup(request: ThreatIntelLookupRequest, db: Session = Depends(get_db)):
+    return {
+        "indicator": request.indicator,
+        "indicator_type": request.indicator_type,
+        "results": threat_intel_service.lookup(request.indicator, request.indicator_type, db=db),
+        "external_enabled": settings.threat_intel_external_enabled,
+    }
+
+
+@app.get("/api/v1/audit-events", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_AUDITOR))])
+def list_audit_events(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
+    rows = db.query(AuditEvent).order_by(AuditEvent.created_at.desc()).offset(offset).limit(limit).all()
+    return {
+        "total": db.query(AuditEvent).count(),
+        "limit": limit,
+        "offset": offset,
+        "items": [
+            {
+                "id": row.id,
+                "username": row.username,
+                "action": row.action,
+                "target_type": row.target_type,
+                "target_id": row.target_id,
+                "details": row.details,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.websocket("/api/v1/ws/alerts")
+async def websocket_alerts(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        await websocket.send_json({"type": "connected", "message": "Subscribed to alert and incident updates."})
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)

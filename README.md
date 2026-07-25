@@ -1,100 +1,273 @@
-# AI-Enhanced Cybersecurity Threat Detector
+# AI-Assisted Network Detection and Response Platform
 
-**Project Overview:** A full-stack web application that uses a Transformer-based AI model to detect and analyze cybersecurity threats from a real-time data stream. The system features a live dashboard for monitoring alerts and performing on-demand analysis.
+This repository is a portfolio-grade defensive security platform built from the original AI-enhanced threat detector. It keeps the legacy synthetic `/predict` and `/alerts` behavior while adding normalized telemetry ingestion, hybrid detections, explainable alert risk, incident correlation, role-protected analyst actions, and a SOC-style React dashboard.
 
----
+This project is for authorized defensive lab and learning use only. It does not perform blocking, exploitation, malware execution, persistence, credential attacks, or offensive actions.
 
-##  Features
+## What It Does
 
--   **Real-Time Threat Analysis:** Ingests and analyzes network data streams via Apache Kafka.
--   **Advanced AI Model:** Utilizes a custom-built Transformer model in PyTorch to understand the context and sequence of network events, providing high-accuracy threat classification.
--   **Persistent Alert Storage:** Detected threats are automatically saved to a PostgreSQL database for historical review.
--   **Interactive Web Dashboard:** A modern, dark-themed frontend built with React for visualizing alerts and testing the model with live data.
--   **Decoupled & Scalable Architecture:** The use of Kafka allows for a flexible and scalable system where data producers and consumers are independent.
+- Ingests synthetic Kafka JSON, Zeek conn-style JSON, and Suricata EVE JSON.
+- Normalizes telemetry into an OCSF-inspired internal schema. This is not a claim of full OCSF compliance.
+- Runs a hybrid detection pipeline with the existing Transformer interface, a safe heuristic model fallback, anomaly scoring, configurable JSON rules, and optional local threat-intel indicators.
+- Produces explainable alerts with risk components, contributing features, MITRE ATT&CK mappings, investigation actions, raw evidence references, and related normalized events.
+- Correlates alerts into deterministic incidents using source, destination, attack family, time window, indicators, and MITRE techniques.
+- Provides versioned `/api/v1/*` APIs, WebSocket updates, legacy compatibility endpoints, and a dark SOC dashboard.
+- Uses migration-controlled database changes and separates the FastAPI API process from the Kafka detection worker.
 
----
+## Architecture
 
-##  Tech Stack
+```mermaid
+flowchart LR
+    Producer[Synthetic, Zeek, Suricata, or JSONL lab telemetry] --> RawKafka[Kafka topic: raw.network-events]
+    RawKafka --> Worker[Detection worker]
+    Worker --> Normalize[Telemetry normalizer]
+    Normalize --> DB[(PostgreSQL)]
+    Normalize --> NormalizedKafka[Kafka topic: normalized.network-events]
+    Worker --> Hybrid[ML + anomaly + rules + threat intel]
+    Hybrid --> Risk[Risk scoring and explanations]
+    Risk --> DetectionsKafka[Kafka topic: detections]
+    Risk --> Alerts[Alerts]
+    Alerts --> Incidents[Incident correlation]
+    Alerts --> DB
+    Incidents --> DB
+    API[FastAPI API and WebSocket server] --> DB
+    UI[React SOC dashboard] --> API
+```
 
-| Component           | Technology                                                              | Purpose                                          |
-| ------------------- | ----------------------------------------------------------------------- | ------------------------------------------------ |
-| **AI & Data Science** | PyTorch, Pandas, Scikit-learn                                           | Building, training, and evaluating the AI model. |
-| **Backend** | Python, FastAPI                                                         | Serving the AI model and RESTful API endpoints.  |
-| **Data Pipeline** | Apache Kafka, Zookeeper                                                 | Real-time data streaming and management.         |
-| **Database** | PostgreSQL                                                              | Storing and retrieving threat alert records.     |
-| **Frontend** | React.js, Axios, Lucide-React                                           | Building the interactive user interface.         |
-| **Environment** | Node.js/npm, Python Virtual Environment (`venv`), Java (for Kafka)      | Local development and dependency management.     |
+The FastAPI service serves HTTP/WebSocket APIs only. Long-running Kafka consumption is handled by `python -m backend.worker`.
 
----
+## Repository Layout
 
-##  System Architecture & Data Flow
+```text
+backend/
+  main.py                       FastAPI app and compatibility endpoints
+  worker.py                     Dedicated Kafka ingestion/detection worker
+  telemetry.py                  Normalized event schema and parsers
+  inference.py                  Transformer loader and fallback prediction
+  anomaly.py                    Isolation Forest loader and fallback scoring
+  rules_engine.py               JSON rule validation and matching
+  pipeline.py                   End-to-end detection pipeline
+  correlation.py                Deterministic alert-to-incident correlation
+  auth.py                       PBKDF2 password hashing, JWT, roles, audit helpers
+  migrations/                   Application-owned migration runner and revisions
+  rules/                        Default rules and MITRE mapping
+  threat_intel/                 Local indicator list
+frontend/
+  src/                          React SOC dashboard
+tests/                          Backend unit and API tests
+docs/                           Architecture, threat model, model card, demo guide
+```
 
-The application operates as a distributed system with a clear, linear data flow:
+## Supported Telemetry Sources
 
-1.  **Data Simulation (`kafka_producer.py`):** A script simulates a network event by sending a JSON message to a Kafka topic.
-2.  **Real-Time Ingestion (Kafka):** The message is published to the `network_traffic` topic. Kafka acts as the central, high-throughput message broker.
-3.  **Backend Consumption (`main.py`):** The FastAPI backend runs a background Kafka consumer that listens for new messages on the `network_traffic` topic.
-4.  **AI-Powered Analysis:** Upon receiving a message, the backend uses the pre-trained PyTorch Transformer model to classify the network flow as "BENIGN" or "ATTACK".
-5.  **Persistent Storage (PostgreSQL):** If a flow is classified as an "ATTACK", a new alert is saved to the `alerts` table in the PostgreSQL database.
-6.  **Frontend Visualization (React):**
-    -   The dashboard periodically fetches data from the `/alerts` API endpoint to display the latest threats.
-    -   A separate form allows users to make manual requests to the `/predict` API endpoint to test the model.
+- Synthetic Kafka JSON compatible with the original producer and `/predict` flow fields.
+- Zeek JSON conn logs using fields such as `ts`, `uid`, `id.orig_h`, `id.resp_h`, `proto`, `orig_bytes`, and `resp_bytes`.
+- Suricata EVE JSON using `timestamp`, `src_ip`, `dest_ip`, `proto`, `flow`, and optional `tcp` fields.
+- PCAP-derived flows are optional. The main app does not require packet tooling. Convert PCAPs to Zeek or Suricata JSON, or install optional tooling in a lab environment and use the `parse_pcap_flows` hook.
 
----
+## Detection Architecture
 
-##  AI Model Details
+The pipeline creates one normalized event and one hybrid detection per event ID. Duplicate Kafka messages reuse the existing detection and do not create duplicate alerts.
 
--   **Model Type:** A custom **Transformer Encoder** model built with PyTorch, specifically designed for numerical sequence classification.
--   **Dataset:** The model is trained on the **CIC-IDS2017** dataset, which contains a wide variety of modern network attacks. The individual daily CSV files are first merged into a single `MachineLearningCVE.csv` file using the `combine_csv.py` script.
--   **Training (`backend/train_model.py`):**
-    1.  The script loads a random sample of the data to manage memory usage.
-    2.  It preprocesses the data by cleaning it and normalizing numerical features using `MinMaxScaler`.
-    3.  It converts the data into sequences of 10 consecutive network flows.
-    4.  The Transformer model is trained on these sequences for 3 epochs.
-    5.  The final trained model (`transformer_model.pth`) and the data scaler (`scaler.gz`) are saved to the `results/` directory.
+- `ml_model`: loads the existing PyTorch Transformer and scaler when present. If artifacts are missing or incompatible, a deterministic heuristic fallback keeps `/predict` and synthetic demos operational.
+- `anomaly`: loads an Isolation Forest artifact when available. If absent, lightweight deterministic volume scoring is used.
+- `rules`: loads `backend/rules/default_rules.json`, validates rule IDs and severities, and evaluates defensive thresholds.
+- `threat_intel`: uses local indicators and cache by default. External providers are disabled unless explicitly configured and are mocked or disabled in tests.
+- `risk`: stores separate components for ML confidence, anomaly score, rule severity, threat-intel confidence, asset criticality, and repeat occurrence count.
 
----
+## Model Limitations
 
-## Project Structure
+The original Transformer artifacts are not required for the application to start. When `results/model/transformer_model.pth` or `results/scaler.gz` is missing, model status reports a fallback state. The fallback is deterministic and useful for demos, but it is not a trained security model.
 
-/├── backend/│   ├── main.py               # FastAPI application, Kafka consumer, API endpoints│   ├── train_model.py        # Script to train the AI model│   ├── kafka_producer.py     # Script to simulate an attack│   └── requirements.txt      # Python dependencies│├── data/│   ├── MachineLearningCVE/   # Folder with daily CSV files│   └── MachineLearningCVE.csv  # The combined dataset│├── frontend/│   ├── public/               # Static assets (index.html, background image)│   ├── src/│   │   ├── components/       # Reusable React components│   │   ├── hooks/            # Custom React hooks│   │   ├── App.js            # Main application component│   │   ├── Dashboard.js      # Main dashboard layout│   │   └── apiService.js     # Handles communication with the backend│   └── package.json          # Frontend dependencies and scripts│├── results/│   ├── model/│   │   └── transformer_model.pth # The trained PyTorch model│   └── scaler.gz             # The saved data scaler│├── combine_csv.py            # Script to merge the dataset files└── README.md                 # This file
----
+The training script now splits data before fitting the scaler and builds train/test sequences separately to reduce leakage. For serious evaluation, prefer scenario, capture-day, host, flow, or time-window splits.
 
-##  How to Run the Application
+## Security And Privacy
 
-### Prerequisites
--   Python 3.10+
--   Node.js and npm
--   PostgreSQL (with a database named `threatdb` created)
--   Java JDK 11+ (for Kafka)
--   Apache Kafka downloaded and extracted
+- No API keys, `.env` files, datasets, PCAPs, or model artifacts should be committed.
+- External threat-intelligence lookups are disabled by default.
+- There are no default production users. Create a development user explicitly with the CLI.
+- JWT auth protects analyst workflow updates, incident changes, threat-intel lookup, and audit-event reads.
+- Passwords are hashed with PBKDF2-HMAC-SHA256 and per-user random salts.
+- CORS is configured through `CORS_ORIGINS`.
 
-### Step-by-Step Guide
+## Environment Variables
 
-You will need **four separate terminals** running simultaneously.
+Copy `.env.example` to `.env` for local Docker development and change secrets before any shared environment.
 
-1.  **Start Zookeeper:**
-    -   Open Terminal 1.
-    -   Navigate to your Kafka directory.
-    -   Run: `.\bin\windows\zookeeper-server-start.bat .\config\zookeeper.properties`
+Key variables:
 
-2.  **Start Kafka Server:**
-    -   Open Terminal 2.
-    -   Navigate to your Kafka directory.
-    -   Run: `.\bin\windows\kafka-server-start.bat .\config\server.properties`
+- `DATABASE_URL`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `POSTGRES_DB`
+- `KAFKA_BOOTSTRAP_SERVERS`
+- `RAW_NETWORK_EVENTS_TOPIC`
+- `NORMALIZED_NETWORK_EVENTS_TOPIC`
+- `DETECTIONS_TOPIC`
+- `DEAD_LETTER_TOPIC`
+- `KAFKA_TOPIC`
+- `KAFKA_WORKER_GROUP_ID`
+- `JWT_SECRET`
+- `CORS_ORIGINS`
+- `THREAT_INTEL_EXTERNAL_ENABLED`
+- `THREAT_INTEL_CACHE_TTL_SECONDS`
 
-3.  **Start the Backend Server:**
-    -   Open Terminal 3.
-    -   Navigate to the project's root directory.
-    -   Activate the virtual environment: `.\venv\Scripts\activate`
-    -   Run the server: `python -m uvicorn backend.main:app --reload --host 0.0.0.0`
+## Docker Startup
 
-4.  **Start the Frontend Server:**
-    -   Open Terminal 4.
-    -   Navigate to the `frontend` directory.
-    -   Run: `npm start`
-    -   Your browser will open to `http://localhost:3000` (or another port).
+```powershell
+docker compose up -d --build
+```
 
-### How to Test
--   **Live Prediction:** Use the form on the dashboard to analyze the default data or enter your own.
--   **Real-Time Alerts:** To see an alert appear in the table, open a fifth terminal, activate the `venv`, and run: `python backend/kafka_producer.py`. The table on the dashboard will update within 5 seconds.
+Services:
+
+- Kafka in KRaft mode on host port `9094`
+- PostgreSQL on host port `5432`
+- FastAPI on `http://localhost:8000`
+- React dashboard on `http://localhost:3000`
+- Detection worker as a separate process/container
+
+Create a development analyst user:
+
+```powershell
+docker compose exec backend-api python -m backend.cli create-user --username analyst --role security_analyst
+```
+
+## Manual Development Setup
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r backend\requirements.txt
+npm install --prefix frontend
+```
+
+Run migrations:
+
+```powershell
+python -m backend.cli migrate
+```
+
+Run the API:
+
+```powershell
+python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Run the worker:
+
+```powershell
+python -m backend.worker
+```
+
+Run the frontend:
+
+```powershell
+npm start --prefix frontend
+```
+
+## Database Migrations
+
+Migration runner:
+
+```powershell
+python -m backend.cli migrate
+```
+
+Current revision:
+
+- `001_platform_schema`
+
+Upgrade behavior:
+
+- Creates platform tables for users, normalized events, detections, alerts, incidents, incident-alert links, analyst feedback, threat-intel cache, model versions, audit events, dead-letter events, and schema migrations.
+- Expands the legacy `alerts` table without dropping existing records.
+
+Downgrade behavior:
+
+- The revision module includes a non-destructive table drop path for new platform tables.
+- Legacy alert columns are intentionally not removed on SQLite-style stores.
+
+## API Summary
+
+Compatibility:
+
+- `POST /predict`
+- `GET /alerts`
+
+Versioned APIs:
+
+- `GET /api/v1/health`
+- `GET /api/v1/ready`
+- `POST /api/v1/auth/login`
+- `GET /api/v1/events`
+- `POST /api/v1/events`
+- `GET /api/v1/detections`
+- `GET /api/v1/alerts`
+- `GET /api/v1/alerts/{alert_id}`
+- `PATCH /api/v1/alerts/{alert_id}`
+- `GET /api/v1/incidents`
+- `GET /api/v1/incidents/{incident_id}`
+- `PATCH /api/v1/incidents/{incident_id}`
+- `GET /api/v1/metrics`
+- `GET /api/v1/model/status`
+- `POST /api/v1/threat-intel/lookup`
+- `GET /api/v1/audit-events`
+- `WS /api/v1/ws/alerts`
+
+List endpoints support pagination and practical filters such as severity, status, classification, source IP, destination IP, detection source, date range, and MITRE technique where applicable.
+
+## Demo Flow
+
+Send one authorized lab synthetic event through Kafka:
+
+```powershell
+python -m backend.kafka_producer
+```
+
+Process Zeek or Suricata samples without Kafka:
+
+```powershell
+python -m backend.cli process-jsonl tests\fixtures\zeek_conn.jsonl --source-hint zeek
+python -m backend.cli process-jsonl tests\fixtures\suricata_eve.jsonl --source-hint suricata
+```
+
+Train the lightweight anomaly detector:
+
+```powershell
+python -m backend.train_anomaly_model
+```
+
+Run a leakage-aware Transformer training pass on a local CIC-style CSV sample:
+
+```powershell
+python -m backend.train_model --data data\MachineLearningCVE.csv --sample-frac 0.1
+```
+
+Do not run full CIC-IDS2017 training as part of normal local verification.
+
+## Tests And Checks
+
+```powershell
+pytest -q
+npm test --prefix frontend -- --watchAll=false
+npm run build --prefix frontend
+docker compose config
+```
+
+Tests do not require live external threat-intelligence APIs.
+
+## Troubleshooting
+
+- API reports model fallback: place compatible `results/model/transformer_model.pth`, `results/scaler.gz`, and optional `results/model/metadata.json`.
+- No Kafka alerts: confirm `detection-worker` is running and consuming `raw.network-events`.
+- Login fails: create a user with `python -m backend.cli create-user`.
+- CORS errors: set `CORS_ORIGINS` to the dashboard origin.
+- Docker Kafka clients on the host should use `localhost:9094`; containers use `kafka:9092`.
+
+## Roadmap
+
+- Add real external threat-intel provider clients behind disabled-by-default configuration.
+- Add persisted notification delivery and richer analyst timelines.
+- Add production-grade auth hardening, refresh tokens, and centralized rate limiting.
+- Add formal Alembic migrations if the schema grows beyond the built-in runner.
+- Add drift metrics once a representative baseline is collected.

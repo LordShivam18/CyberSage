@@ -1,25 +1,83 @@
-// frontend/src/apiService.js
-
 import axios from 'axios';
 
-// The API_BASE_URL constant is no longer needed
-// const API_BASE_URL = 'http://localhost:8000';
+let authToken = '';
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
+const api = axios.create({ baseURL: API_BASE_URL });
 
-/**
- * Fetches the latest threat alerts from the backend.
- */
+export const setAuthToken = (token) => {
+    authToken = token || '';
+};
+
+const authHeaders = () => (
+    authToken ? { Authorization: `Bearer ${authToken}` } : {}
+);
+
 export const fetchAlerts = async () => {
-    // Use a relative path. The React dev server will proxy this to http://localhost:8000/alerts
-    const response = await axios.get('/alerts');
+    const response = await api.get('/api/v1/alerts?limit=100');
+    return response.data.items || response.data;
+};
+
+export const fetchAlertPage = async (params = {}) => {
+    const response = await api.get('/api/v1/alerts', { params });
     return response.data;
 };
 
-/**
- * Posts network flow data to get a live prediction.
- * @param {object} formData - The network flow data.
- */
-export const postPrediction = async (formData) => {
-    // Use a relative path for this endpoint as well
-    const response = await axios.post('/predict', formData);
+export const fetchIncidents = async (params = {}) => {
+    const response = await api.get('/api/v1/incidents', { params });
     return response.data;
+};
+
+export const fetchEvents = async (params = {}) => {
+    const response = await api.get('/api/v1/events', { params });
+    return response.data;
+};
+
+export const fetchMetrics = async () => {
+    const response = await api.get('/api/v1/metrics');
+    return response.data;
+};
+
+export const fetchModelStatus = async () => {
+    const response = await api.get('/api/v1/model/status');
+    return response.data;
+};
+
+export const postPrediction = async (formData) => {
+    const response = await api.post('/predict', formData);
+    return response.data;
+};
+
+export const login = async (credentials) => {
+    const response = await api.post('/api/v1/auth/login', credentials);
+    setAuthToken(response.data.access_token);
+    return response.data;
+};
+
+export const updateAlert = async (alertId, payload) => {
+    const response = await api.patch(`/api/v1/alerts/${alertId}`, payload, { headers: authHeaders() });
+    return response.data;
+};
+
+export const updateIncident = async (incidentId, payload) => {
+    const response = await api.patch(`/api/v1/incidents/${incidentId}`, payload, { headers: authHeaders() });
+    return response.data;
+};
+
+export const ingestEvent = async (payload, sourceHint) => {
+    const response = await api.post(
+        '/api/v1/events',
+        { payload, source_hint: sourceHint },
+        { headers: authHeaders() }
+    );
+    return response.data;
+};
+
+export const alertWebSocketUrl = () => {
+    if (!API_BASE_URL) {
+        const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        return `${scheme}://${window.location.host}/api/v1/ws/alerts`;
+    }
+    const url = new URL('/api/v1/ws/alerts', API_BASE_URL);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    return url.toString();
 };
