@@ -33,10 +33,10 @@ jobs:
           
       - name: Install dependencies
         run: |
+          $ErrorActionPreference = "Stop"
           python -m pip install --upgrade pip
-          pip install -r portable/requirements.txt
-          pip install pyinstaller pytest
-          
+          python -m pip install -e "./portable[dev,build,win]"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run portable unit tests and contract tests
         run: |
           $env:PYTHONPATH = "${{ github.workspace }}"
@@ -56,48 +56,25 @@ jobs:
           
       - name: Verify report schema, checksum, and absence of secrets
         run: |
-          cd portable/dist/CyberSage-Portable
-          $reports = Get-ChildItem -Path smoke-output -Filter "assessment_*.json"
-          if ($reports.Count -ne 1) {
-              throw "Expected exactly 1 JSON report, found $($reports.Count)"
+          $ErrorActionPreference = "Stop"
+          $reports = Get-ChildItem -Path "portable/dist/CyberSage-Portable/smoke-output" -Filter "assessment_*.json"
+          if (@($reports).Count -ne 1) {
+              throw "Expected exactly one JSON report."
           }
-          $reportPath = $reports[0].FullName
           
-          python -c "
-          import json, sys
-          sys.path.insert(0, '${{ github.workspace }}')
-          from shared.report_contract import verify_checksum
-          from portable.cybersage_portable.schemas.validator import validate_report
+          $env:PYTHONPATH = "${{ github.workspace }}"
+          python portable/ci/verify_smoke_report.py $reports[0].FullName
           
-          with open(r'$reportPath', 'r', encoding='utf-8') as f:
-              r = json.load(f)
-              
-          if not verify_checksum(r):
-              sys.exit('Checksum validation failed')
-              
-          if not validate_report(r):
-              sys.exit('Schema validation failed')
-              
-          # Structured secret inspection
-          def check_secrets(obj):
-              if isinstance(obj, dict):
-                  for k, v in obj.items():
-                      kl = k.lower()
-                      if 'password' in kl or 'cookie' in kl or 'token' in kl:
-                          sys.exit(f'Prohibited secret field found: {k}')
-                      check_secrets(v)
-              elif isinstance(obj, list):
-                  for item in obj:
-                      check_secrets(item)
-          check_secrets(r)
-          "
+          if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+          }
           
       - name: Cleanup temporary output
         if: always()
         run: |
-          cd portable/dist/CyberSage-Portable
-          if (Test-Path smoke-output) {
-              Remove-Item -Recurse -Force smoke-output
+          $ErrorActionPreference = "Stop"
+          if (Test-Path "portable/dist/CyberSage-Portable/smoke-output") {
+              Remove-Item -Recurse -Force "portable/dist/CyberSage-Portable/smoke-output"
           }
           
       - name: Create ZIP archive

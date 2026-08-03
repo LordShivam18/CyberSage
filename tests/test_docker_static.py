@@ -80,3 +80,16 @@ def test_docker_compose_static_configuration():
     assert "wait_for_service frontend running" not in workflow_text
     assert "frontend_ready=false" in workflow_text
     assert "curl --fail --silent --show-error --max-time 5 http://127.0.0.1:3000/" in workflow_text
+
+def test_backend_dockerfile_contains_shared():
+    dockerfile_path = ROOT / "backend" / "Dockerfile"
+    content = dockerfile_path.read_text()
+    assert "COPY shared /app/shared" in content
+    
+    dockerignore_path = ROOT / "backend" / ".dockerignore"
+    if dockerignore_path.exists():
+        assert "shared" not in dockerignore_path.read_text().splitlines()
+
+    api_assessments = (ROOT / "backend" / "api_assessments.py").read_text()
+    assert "from shared.report_contract import" in api_assessments
+    assert not (ROOT / "backend" / "report_contract.py").exists()
