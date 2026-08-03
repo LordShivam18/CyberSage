@@ -16,13 +16,21 @@ def _list_env(name: str, default: str) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+INSECURE_JWT_SECRETS = {
+    "",
+    "development-only-change-me",
+    "change-me",
+    "changeme",
+    "secret",
+    "password",
+}
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "AI-Assisted Network Detection and Response Platform"
     environment: str = os.getenv("APP_ENV", "development")
-    database_url: str = os.getenv(
-        "DATABASE_URL", "postgresql://postgres:postgres@localhost/threatdb"
-    )
+    database_url: str = os.getenv("DATABASE_URL", "sqlite:///./ndr_dev.db")
     cors_origins: List[str] = None
     kafka_bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     raw_topic: str = os.getenv("RAW_NETWORK_EVENTS_TOPIC", "raw.network-events")
@@ -34,7 +42,7 @@ class Settings:
     dead_letter_topic: str = os.getenv("DEAD_LETTER_TOPIC", "dead-letter-events")
     worker_group_id: str = os.getenv("KAFKA_WORKER_GROUP_ID", "ndr-detection-worker")
     kafka_enabled: bool = _bool_env("KAFKA_ENABLED", True)
-    auto_migrate: bool = _bool_env("AUTO_MIGRATE", True)
+    auto_migrate: bool = _bool_env("AUTO_MIGRATE", False)
     repo_root: Path = Path(__file__).resolve().parent.parent
     model_path: Path = Path(
         os.getenv("MODEL_PATH", str(Path("results") / "model" / "transformer_model.pth"))
@@ -82,6 +90,14 @@ class Settings:
         if path.is_absolute():
             return path
         return self.repo_root / path
+
+    def validate_runtime_security(self) -> None:
+        if self.environment.lower() != "production":
+            return
+        if self.jwt_secret in INSECURE_JWT_SECRETS or len(self.jwt_secret) < 32:
+            raise RuntimeError("Production requires JWT_SECRET with at least 32 non-default characters")
+        if "*" in self.cors_origins:
+            raise RuntimeError("Production CORS_ORIGINS cannot include '*' when credentials are enabled")
 
 
 settings = Settings()

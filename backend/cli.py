@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from .auth import ALL_ROLES, ROLE_ANALYST, create_user
+from .config import settings
 from .database import SessionLocal
 from .migrations.runner import current_revision, run_migrations
 from .pipeline import process_payload
@@ -83,6 +84,7 @@ def build_parser():
 
 
 def main():
+    settings.validate_runtime_security()
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)

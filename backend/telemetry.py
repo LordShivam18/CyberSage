@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
@@ -114,6 +115,15 @@ def _protocol(value: Any) -> Optional[str]:
     return str(value).upper()
 
 
+def _ip(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    try:
+        return str(ipaddress.ip_address(str(value)))
+    except ValueError as exc:
+        raise ValueError(f"Invalid IP address: {value}") from exc
+
+
 def _event_hash(payload: Dict[str, Any], prefix: str) -> str:
     encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
     return f"{prefix}-{hashlib.sha256(encoded).hexdigest()[:32]}"
@@ -143,9 +153,9 @@ def normalize_synthetic_event(
         event_id=event_id,
         timestamp=_parse_datetime(payload.get("timestamp")),
         sensor_type=str(payload.get("sensor_type") or "synthetic"),
-        source_ip=payload.get("source_ip") or payload.get("src_ip"),
+        source_ip=_ip(payload.get("source_ip") or payload.get("src_ip")),
         source_port=_integer(payload.get("source_port") or payload.get("src_port")),
-        destination_ip=payload.get("destination_ip") or payload.get("dest_ip") or payload.get("dst_ip"),
+        destination_ip=_ip(payload.get("destination_ip") or payload.get("dest_ip") or payload.get("dst_ip")),
         destination_port=_integer(
             payload.get("destination_port") or payload.get("dest_port") or payload.get("dst_port")
         ),
@@ -172,9 +182,9 @@ def normalize_zeek_conn_event(
         event_id=event_id,
         timestamp=_parse_datetime(payload.get("ts") or payload.get("timestamp")),
         sensor_type="zeek",
-        source_ip=payload.get("id.orig_h") or payload.get("source_ip"),
+        source_ip=_ip(payload.get("id.orig_h") or payload.get("source_ip")),
         source_port=_integer(payload.get("id.orig_p") or payload.get("source_port")),
-        destination_ip=payload.get("id.resp_h") or payload.get("destination_ip"),
+        destination_ip=_ip(payload.get("id.resp_h") or payload.get("destination_ip")),
         destination_port=_integer(payload.get("id.resp_p") or payload.get("destination_port")),
         protocol=_protocol(payload.get("proto")),
         duration=_number(payload.get("duration")),
@@ -201,9 +211,9 @@ def normalize_suricata_eve_event(
         event_id=event_id,
         timestamp=_parse_datetime(payload.get("timestamp")),
         sensor_type="suricata",
-        source_ip=payload.get("src_ip") or payload.get("source_ip"),
+        source_ip=_ip(payload.get("src_ip") or payload.get("source_ip")),
         source_port=_integer(payload.get("src_port") or payload.get("source_port")),
-        destination_ip=payload.get("dest_ip") or payload.get("dst_ip") or payload.get("destination_ip"),
+        destination_ip=_ip(payload.get("dest_ip") or payload.get("dst_ip") or payload.get("destination_ip")),
         destination_port=_integer(
             payload.get("dest_port") or payload.get("dst_port") or payload.get("destination_port")
         ),

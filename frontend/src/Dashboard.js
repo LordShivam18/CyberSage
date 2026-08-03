@@ -446,7 +446,12 @@ function Dashboard() {
             await operation();
             await loadData();
         } catch (err) {
-            setPermissionError(err.response?.status === 403 ? 'Your role cannot perform this action.' : 'Action failed.');
+            if (err.response?.status === 401) {
+                setUser(null);
+                setPermissionError('Session expired. Sign in again to continue analyst actions.');
+            } else {
+                setPermissionError(err.response?.status === 403 ? 'Your role cannot perform this action.' : 'Action failed.');
+            }
         }
     };
 

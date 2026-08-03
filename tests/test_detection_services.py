@@ -1,10 +1,13 @@
 import json
+import time
 
 from backend.detection_types import DetectorResult
+from backend.config import Settings
 from backend.inference import ModelDetector
 from backend.mitre import map_to_mitre
 from backend.risk import RiskScorer, severity_from_score
 from backend.rules_engine import RuleEngine
+from backend.threat_intel_service import ThreatIntelProvider, ThreatIntelService
 from backend.telemetry import normalize_synthetic_event
 
 
@@ -59,6 +62,30 @@ def test_rule_engine_validates_and_matches_rules(tmp_path):
     assert result.triggered_rules[0]["id"] == "TEST_BYTES"
 
 
+def test_invalid_rule_configuration_is_rejected(tmp_path):
+    rules_path = tmp_path / "rules.json"
+    rules_path.write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "id": "BAD",
+                        "name": "Bad",
+                        "description": "bad",
+                        "severity": "urgent",
+                        "conditions": {"field": "bytes_sent", "operator": "gte", "threshold": 100},
+                    }
+                ]
+            }
+        )
+    )
+
+    engine = RuleEngine(rules_path=rules_path)
+
+    assert engine.rules == []
+    assert "Unsupported severity" in engine.error
+
+
 def test_risk_score_keeps_components_explainable():
     scorer = RiskScorer()
     risk = scorer.score(
@@ -86,3 +113,42 @@ def test_mitre_mapping_uses_classes_and_rule_ids():
 
     assert "T1046" in techniques
     assert "T1041" in techniques
+
+
+def test_insecure_production_jwt_secret_fails_safely():
+    settings = Settings(
+        environment="production",
+        jwt_secret="development-only-change-me",
+        cors_origins=["http://localhost:3000"],
+    )
+
+    try:
+        settings.validate_runtime_security()
+    except RuntimeError as exc:
+        assert "JWT_SECRET" in str(exc)
+    else:
+        raise AssertionError("production settings accepted an insecure JWT secret")
+
+
+class SlowProvider(ThreatIntelProvider):
+    name = "slow-test-provider"
+
+    def lookup(self, indicator: str, indicator_type: str):
+        time.sleep(0.01)
+        return {
+            "indicator": indicator,
+            "indicator_type": indicator_type,
+            "source": self.name,
+            "confidence": 0.9,
+            "verdict": "malicious",
+            "details": {},
+        }
+
+
+def test_threat_intelligence_timeout_records_provenance():
+    service = ThreatIntelService(providers=[SlowProvider()], timeout_seconds=0.0)
+
+    results = service.lookup("203.0.113.66", "ip")
+
+    assert results[0]["verdict"] == "timeout"
+    assert results[0]["source"] == "slow-test-provider"

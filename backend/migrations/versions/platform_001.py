@@ -4,33 +4,35 @@ from sqlalchemy import inspect, text
 revision = "001_platform_schema"
 
 
-ALERT_COLUMNS = {
-    "alert_key": "VARCHAR(128)",
-    "detection_id": "INTEGER",
-    "status": "VARCHAR(64) DEFAULT 'new'",
-    "severity": "VARCHAR(32) DEFAULT 'low'",
-    "classification": "VARCHAR(128)",
-    "confidence": "FLOAT",
-    "detection_source": "VARCHAR(64)",
-    "source_ip": "VARCHAR(64)",
-    "destination_ip": "VARCHAR(64)",
-    "risk_score": "FLOAT",
-    "triggered_rules": "JSON",
-    "anomaly_score": "FLOAT",
-    "model_version": "VARCHAR(255)",
-    "mitre_techniques": "JSON",
-    "related_event_ids": "JSON",
-    "investigation_actions": "JSON",
-    "risk_components": "JSON",
-    "raw_evidence_reference": "VARCHAR(512)",
-    "assignee": "VARCHAR(255)",
-    "priority": "VARCHAR(32) DEFAULT 'medium'",
-    "analyst_notes": "TEXT",
-    "resolution_reason": "TEXT",
-    "first_seen": "TIMESTAMP",
-    "last_seen": "TIMESTAMP",
-    "updated_at": "TIMESTAMP",
-}
+def _alert_columns(engine):
+    json_type = "JSONB" if engine.dialect.name == "postgresql" else "JSON"
+    return {
+        "alert_key": "VARCHAR(128)",
+        "detection_id": "INTEGER",
+        "status": "VARCHAR(64)",
+        "severity": "VARCHAR(32)",
+        "classification": "VARCHAR(128)",
+        "confidence": "FLOAT",
+        "detection_source": "VARCHAR(64)",
+        "source_ip": "VARCHAR(64)",
+        "destination_ip": "VARCHAR(64)",
+        "risk_score": "FLOAT",
+        "triggered_rules": json_type,
+        "anomaly_score": "FLOAT",
+        "model_version": "VARCHAR(255)",
+        "mitre_techniques": json_type,
+        "related_event_ids": json_type,
+        "investigation_actions": json_type,
+        "risk_components": json_type,
+        "raw_evidence_reference": "VARCHAR(512)",
+        "assignee": "VARCHAR(255)",
+        "priority": "VARCHAR(32)",
+        "analyst_notes": "TEXT",
+        "resolution_reason": "TEXT",
+        "first_seen": "TIMESTAMP",
+        "last_seen": "TIMESTAMP",
+        "updated_at": "TIMESTAMP",
+    }
 
 
 INDEXES = [
@@ -54,7 +56,7 @@ def _add_missing_alert_columns(engine) -> None:
         return
     existing = {column["name"] for column in inspector.get_columns("alerts")}
     with engine.begin() as connection:
-        for name, type_sql in ALERT_COLUMNS.items():
+        for name, type_sql in _alert_columns(engine).items():
             if name in existing:
                 continue
             connection.execute(text(f"ALTER TABLE alerts ADD COLUMN {_quote(name)} {type_sql}"))

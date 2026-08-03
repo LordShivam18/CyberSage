@@ -13,8 +13,11 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import JSONB
 
 from .database import Base
+
+JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 
 def utcnow():
@@ -57,8 +60,8 @@ class NormalizedEvent(Base):
     device_id = Column(String(255), nullable=True, index=True)
     raw_event_reference = Column(String(512), nullable=True)
     schema_version = Column(String(32), nullable=False, default="ndr.event.v1")
-    raw_event = Column(JSON, nullable=False, default=dict)
-    normalized = Column(JSON, nullable=False, default=dict)
+    raw_event = Column(JSONType, nullable=False, default=dict)
+    normalized = Column(JSONType, nullable=False, default=dict)
 
     detections = relationship("Detection", back_populates="event")
 
@@ -78,14 +81,14 @@ class Detection(Base):
     model_name = Column(String(255), nullable=True)
     model_version = Column(String(255), nullable=True)
     model_file_checksum = Column(String(128), nullable=True)
-    triggered_rules = Column(JSON, nullable=False, default=list)
+    triggered_rules = Column(JSONType, nullable=False, default=list)
     anomaly_score = Column(Float, nullable=True)
-    threat_intel = Column(JSON, nullable=False, default=list)
-    score_components = Column(JSON, nullable=False, default=dict)
-    contributing_features = Column(JSON, nullable=False, default=list)
-    mitre_techniques = Column(JSON, nullable=False, default=list)
-    recommended_actions = Column(JSON, nullable=False, default=list)
-    related_event_ids = Column(JSON, nullable=False, default=list)
+    threat_intel = Column(JSONType, nullable=False, default=list)
+    score_components = Column(JSONType, nullable=False, default=dict)
+    contributing_features = Column(JSONType, nullable=False, default=list)
+    mitre_techniques = Column(JSONType, nullable=False, default=list)
+    recommended_actions = Column(JSONType, nullable=False, default=list)
+    related_event_ids = Column(JSONType, nullable=False, default=list)
     raw_evidence_reference = Column(String(512), nullable=True)
     latency_ms = Column(Float, nullable=True)
 
@@ -111,13 +114,13 @@ class Alert(Base):
     source_ip = Column(String(64), nullable=True, index=True)
     destination_ip = Column(String(64), nullable=True, index=True)
     risk_score = Column(Float, nullable=True, index=True)
-    triggered_rules = Column(JSON, nullable=False, default=list)
+    triggered_rules = Column(JSONType, nullable=False, default=list)
     anomaly_score = Column(Float, nullable=True)
     model_version = Column(String(255), nullable=True)
-    mitre_techniques = Column(JSON, nullable=False, default=list)
-    related_event_ids = Column(JSON, nullable=False, default=list)
-    investigation_actions = Column(JSON, nullable=False, default=list)
-    risk_components = Column(JSON, nullable=False, default=dict)
+    mitre_techniques = Column(JSONType, nullable=False, default=list)
+    related_event_ids = Column(JSONType, nullable=False, default=list)
+    investigation_actions = Column(JSONType, nullable=False, default=list)
+    risk_components = Column(JSONType, nullable=False, default=dict)
     raw_evidence_reference = Column(String(512), nullable=True)
     assignee = Column(String(255), nullable=True)
     priority = Column(String(32), nullable=False, default="medium", index=True)
@@ -145,9 +148,9 @@ class Incident(Base):
     source_ip = Column(String(64), nullable=True, index=True)
     destination_ip = Column(String(64), nullable=True, index=True)
     attack_family = Column(String(128), nullable=True, index=True)
-    mitre_techniques = Column(JSON, nullable=False, default=list)
-    related_assets = Column(JSON, nullable=False, default=list)
-    indicators = Column(JSON, nullable=False, default=list)
+    mitre_techniques = Column(JSONType, nullable=False, default=list)
+    related_assets = Column(JSONType, nullable=False, default=list)
+    indicators = Column(JSONType, nullable=False, default=list)
     first_seen = Column(DateTime, nullable=False, default=utcnow, index=True)
     last_seen = Column(DateTime, nullable=False, default=utcnow, index=True)
     created_at = Column(DateTime, nullable=False, default=utcnow)
@@ -191,7 +194,7 @@ class ThreatIntelCache(Base):
     source = Column(String(128), nullable=False)
     confidence = Column(Float, nullable=False, default=0.0)
     verdict = Column(String(64), nullable=False, default="unknown")
-    details = Column(JSON, nullable=False, default=dict)
+    details = Column(JSONType, nullable=False, default=dict)
     expires_at = Column(DateTime, nullable=False, index=True)
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
@@ -204,10 +207,10 @@ class ModelVersion(Base):
     version = Column(String(255), nullable=False)
     model_type = Column(String(128), nullable=False)
     checksum = Column(String(128), nullable=True)
-    feature_list = Column(JSON, nullable=False, default=list)
-    class_mapping = Column(JSON, nullable=False, default=dict)
-    metrics = Column(JSON, nullable=False, default=dict)
-    metadata_json = Column(JSON, nullable=False, default=dict)
+    feature_list = Column(JSONType, nullable=False, default=list)
+    class_mapping = Column(JSONType, nullable=False, default=dict)
+    metrics = Column(JSONType, nullable=False, default=dict)
+    metadata_json = Column(JSONType, nullable=False, default=dict)
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
@@ -219,7 +222,7 @@ class AuditEvent(Base):
     action = Column(String(128), nullable=False, index=True)
     target_type = Column(String(128), nullable=False, index=True)
     target_id = Column(String(128), nullable=True, index=True)
-    details = Column(JSON, nullable=False, default=dict)
+    details = Column(JSONType, nullable=False, default=dict)
     created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
 
 
@@ -231,6 +234,6 @@ class DeadLetterEvent(Base):
     topic = Column(String(255), nullable=True)
     partition = Column(Integer, nullable=True)
     offset = Column(Integer, nullable=True)
-    payload = Column(JSON, nullable=False, default=dict)
+    payload = Column(JSONType, nullable=False, default=dict)
     error = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False, default=utcnow, index=True)

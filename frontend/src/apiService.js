@@ -73,11 +73,16 @@ export const ingestEvent = async (payload, sourceHint) => {
 };
 
 export const alertWebSocketUrl = () => {
+    const appendToken = (url) => {
+        if (!authToken) return url;
+        const separator = url.includes('?') ? '&' : '?';
+        return `${url}${separator}token=${encodeURIComponent(authToken)}`;
+    };
     if (!API_BASE_URL) {
         const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        return `${scheme}://${window.location.host}/api/v1/ws/alerts`;
+        return appendToken(`${scheme}://${window.location.host}/api/v1/ws/alerts`);
     }
     const url = new URL('/api/v1/ws/alerts', API_BASE_URL);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    return url.toString();
+    return appendToken(url.toString());
 };

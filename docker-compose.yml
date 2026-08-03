@@ -26,18 +26,35 @@ services:
     image: postgres:15-alpine
     container_name: ndr_postgres
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:-threatuser}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change-me-dev-password}
-      - POSTGRES_DB=${POSTGRES_DB:-threatdb}
+      - POSTGRES_USER=${POSTGRES_USER:?set POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:?set POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-threatuser} -d ${POSTGRES_DB:-threatdb}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?set POSTGRES_USER} -d ${POSTGRES_DB:?set POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: ndr_migrate
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
+      - ./results:/app/results
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET}
+      - APP_ENV=${APP_ENV:-development}
+    command: python -m backend.cli migrate
 
   backend-api:
     build:
@@ -47,6 +64,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
     ports:
@@ -55,14 +74,16 @@ services:
       - ./backend:/app/backend
       - ./results:/app/results
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-threatuser}:${POSTGRES_PASSWORD:-change-me-dev-password}@db:5432/${POSTGRES_DB:-threatdb}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - RAW_NETWORK_EVENTS_TOPIC=raw.network-events
       - NORMALIZED_NETWORK_EVENTS_TOPIC=normalized.network-events
       - DETECTIONS_TOPIC=detections
       - DEAD_LETTER_TOPIC=dead-letter-events
       - KAFKA_TOPIC=network_traffic
-      - JWT_SECRET=${JWT_SECRET:-development-only-change-me}
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET}
+      - APP_ENV=${APP_ENV:-development}
+      - AUTO_MIGRATE=false
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
     command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
     healthcheck:
@@ -85,7 +106,7 @@ services:
       - ./backend:/app/backend
       - ./results:/app/results
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-threatuser}:${POSTGRES_PASSWORD:-change-me-dev-password}@db:5432/${POSTGRES_DB:-threatdb}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - RAW_NETWORK_EVENTS_TOPIC=raw.network-events
       - NORMALIZED_NETWORK_EVENTS_TOPIC=normalized.network-events
@@ -93,7 +114,9 @@ services:
       - DEAD_LETTER_TOPIC=dead-letter-events
       - KAFKA_TOPIC=network_traffic
       - KAFKA_WORKER_GROUP_ID=ndr-detection-worker
-      - JWT_SECRET=${JWT_SECRET:-development-only-change-me}
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET}
+      - APP_ENV=${APP_ENV:-development}
+      - AUTO_MIGRATE=false
     command: python -m backend.worker
 
   frontend:

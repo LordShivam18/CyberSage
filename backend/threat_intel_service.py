@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -60,8 +61,9 @@ class DisabledExternalProvider(ThreatIntelProvider):
 
 
 class ThreatIntelService:
-    def __init__(self):
-        self.providers: List[ThreatIntelProvider] = [LocalIndicatorProvider()]
+    def __init__(self, providers: Optional[List[ThreatIntelProvider]] = None, timeout_seconds: Optional[float] = None):
+        self.timeout_seconds = settings.threat_intel_timeout_seconds if timeout_seconds is None else timeout_seconds
+        self.providers: List[ThreatIntelProvider] = providers if providers is not None else [LocalIndicatorProvider()]
         if settings.threat_intel_external_enabled:
             self.providers.extend(
                 [
@@ -79,7 +81,21 @@ class ThreatIntelService:
             return cached
         hits = []
         for provider in self.providers:
+            started = time.monotonic()
             result = provider.lookup(indicator, indicator_type)
+            elapsed = time.monotonic() - started
+            if elapsed > self.timeout_seconds:
+                hits.append(
+                    {
+                        "indicator": indicator,
+                        "indicator_type": indicator_type,
+                        "source": provider.name,
+                        "confidence": 0.0,
+                        "verdict": "timeout",
+                        "details": {"timeout_seconds": self.timeout_seconds, "elapsed_seconds": round(elapsed, 4)},
+                    }
+                )
+                continue
             if result:
                 hits.append(result)
                 self._store_cache(result, db)

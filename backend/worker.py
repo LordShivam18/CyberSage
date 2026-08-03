@@ -20,6 +20,7 @@ class DetectionWorker:
         self.producer = None
 
     def start(self):
+        settings.validate_runtime_security()
         if settings.auto_migrate:
             run_migrations()
         topics = list(dict.fromkeys([settings.raw_topic, settings.legacy_topic]))

@@ -6,7 +6,7 @@ import os
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, Iterable, Optional
+from typing import Callable, Dict, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
@@ -80,7 +80,7 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_access_token(user: User) -> str:
+def create_access_token(user: User, expires_delta: Optional[timedelta] = None) -> str:
     header = {"alg": "HS256", "typ": "JWT"}
     now = int(time.time())
     payload = {
@@ -88,7 +88,12 @@ def create_access_token(user: User) -> str:
         "sub": user.username,
         "role": user.role,
         "iat": now,
-        "exp": int((datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_minutes)).timestamp()),
+        "exp": int(
+            (
+                datetime.now(timezone.utc)
+                + (expires_delta if expires_delta is not None else timedelta(minutes=settings.access_token_minutes))
+            ).timestamp()
+        ),
     }
     signing_input = f"{_b64url(json.dumps(header, separators=(',', ':')).encode())}.{_b64url(json.dumps(payload, separators=(',', ':')).encode())}"
     signature = hmac.new(settings.jwt_secret.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest()
@@ -127,12 +132,16 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
     return user
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def authenticate_token(db: Session, token: str) -> User:
     payload = decode_access_token(token)
     user = db.query(User).filter(User.username == payload.get("sub")).first()
     if not user or user.disabled:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User is disabled or missing")
     return user
+
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+    return authenticate_token(db, token)
 
 
 def require_roles(*roles: str) -> Callable:

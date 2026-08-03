@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from .anomaly import anomaly_detector
 from .auth import (
+    ALL_ROLES,
     ROLE_ADMIN,
     ROLE_ANALYST,
     ROLE_AUDITOR,
@@ -16,6 +17,7 @@ from .auth import (
     LoginRequest,
     TokenResponse,
     audit_event,
+    authenticate_token,
     auth_rate_limiter,
     authenticate_user,
     create_access_token,
@@ -23,9 +25,9 @@ from .auth import (
     require_roles,
 )
 from .config import settings
-from .database import get_db
+from .database import SessionLocal, get_db
 from .inference import model_detector, run_prediction
-from .migrations.runner import current_revision, run_migrations
+from .migrations.runner import current_revision
 from .models import Alert, AuditEvent, Detection, Incident, NormalizedEvent
 from .pipeline import process_payload
 from .realtime import manager
@@ -44,8 +46,7 @@ from .threat_intel_service import threat_intel_service
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    if settings.auto_migrate:
-        run_migrations()
+    settings.validate_runtime_security()
     yield
 
 
@@ -114,7 +115,16 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
 @app.post("/predict", dependencies=[Depends(predict_rate_limiter)])
 def predict_flow(flow: NetworkFlow):
     prediction, probability = run_prediction(_dump_model(flow))
-    return {"prediction": prediction, "probability": probability}
+    status_payload = model_detector.status()
+    return {
+        "prediction": prediction,
+        "probability": probability,
+        "model_available": status_payload["available"],
+        "degraded": not status_payload["available"],
+        "model_name": status_payload["model_name"],
+        "model_version": status_payload["model_version"],
+        "warning": status_payload["fallback_reason"],
+    }
 
 
 @app.get("/alerts", response_model=list[AlertResponse])
@@ -428,6 +438,26 @@ def list_audit_events(limit: int = Query(100, ge=1, le=500), offset: int = Query
 
 @app.websocket("/api/v1/ws/alerts")
 async def websocket_alerts(websocket: WebSocket):
+    token = websocket.query_params.get("token")
+    authorization = websocket.headers.get("authorization")
+    if not token and authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1]
+    if not token:
+        await websocket.close(code=1008)
+        return
+
+    db = SessionLocal()
+    try:
+        user = authenticate_token(db, token)
+        if user.role not in ALL_ROLES:
+            await websocket.close(code=1008)
+            return
+    except Exception:
+        await websocket.close(code=1008)
+        return
+    finally:
+        db.close()
+
     await manager.connect(websocket)
     try:
         await websocket.send_json({"type": "connected", "message": "Subscribed to alert and incident updates."})
