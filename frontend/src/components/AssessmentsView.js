@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, Monitor, Info, AlertTriangle, XCircle, CheckCircle, Search, UploadCloud } from 'lucide-react';
+import { Monitor, Info, AlertTriangle, XCircle, CheckCircle, UploadCloud } from 'lucide-react';
 import { fetchAssessments, fetchAssessmentDetails, importAssessment } from '../apiService';
 import './AssessmentsView.css';
 
-function AssessmentsView({ permissionError }) {
+function AssessmentsView() {
     const [assessments, setAssessments] = useState([]);
     const [selectedAssessment, setSelectedAssessment] = useState(null);
     const [details, setDetails] = useState(null);

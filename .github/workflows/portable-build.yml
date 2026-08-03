@@ -46,27 +46,59 @@ jobs:
         run: |
           $env:PYTHONPATH = "${{ github.workspace }}"
           cd portable
-          pyinstaller --noconfirm --onedir --name CyberSage-Portable cybersage_portable/__main__.py
+          pyinstaller --noconfirm --onedir --name CyberSage-Portable launcher.py
           
       - name: Run smoke scan in minimal mode
         run: |
           cd portable/dist/CyberSage-Portable
           # Run without admin privileges, read-only, minimal privacy
-          ./CyberSage-Portable.exe scan --output smoke_report.json --privacy minimal
+          ./CyberSage-Portable.exe scan --output smoke-output --privacy-mode minimal
           
-      - name: Verify checksum and absence of secrets
+      - name: Verify report schema, checksum, and absence of secrets
         run: |
           cd portable/dist/CyberSage-Portable
-          # Validate checksum using the shared contract script we can inline or use python directly
-          python -c "import json, sys; sys.path.insert(0, '${{ github.workspace }}'); from shared.report_contract import verify_checksum; r = json.load(open('smoke_report.json')); assert verify_checksum(r), 'Checksum validation failed'"
-          # Verify secrets absence
-          $report = Get-Content smoke_report.json
-          if ($report -match "password" -or $report -match "cookie" -or $report -match "token") { throw "Prohibited secret found" }
+          $reports = Get-ChildItem -Path smoke-output -Filter "assessment_*.json"
+          if ($reports.Count -ne 1) {
+              throw "Expected exactly 1 JSON report, found $($reports.Count)"
+          }
+          $reportPath = $reports[0].FullName
           
-      - name: Cleanup temporary report
+          python -c "
+          import json, sys
+          sys.path.insert(0, '${{ github.workspace }}')
+          from shared.report_contract import verify_checksum
+          from portable.cybersage_portable.schemas.validator import validate_report
+          
+          with open(r'$reportPath', 'r', encoding='utf-8') as f:
+              r = json.load(f)
+              
+          if not verify_checksum(r):
+              sys.exit('Checksum validation failed')
+              
+          if not validate_report(r):
+              sys.exit('Schema validation failed')
+              
+          # Structured secret inspection
+          def check_secrets(obj):
+              if isinstance(obj, dict):
+                  for k, v in obj.items():
+                      kl = k.lower()
+                      if 'password' in kl or 'cookie' in kl or 'token' in kl:
+                          sys.exit(f'Prohibited secret field found: {k}')
+                      check_secrets(v)
+              elif isinstance(obj, list):
+                  for item in obj:
+                      check_secrets(item)
+          check_secrets(r)
+          "
+          
+      - name: Cleanup temporary output
+        if: always()
         run: |
           cd portable/dist/CyberSage-Portable
-          Remove-Item smoke_report.json
+          if (Test-Path smoke-output) {
+              Remove-Item -Recurse -Force smoke-output
+          }
           
       - name: Create ZIP archive
         run: |
