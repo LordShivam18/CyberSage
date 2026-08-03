@@ -51,6 +51,19 @@ def test_docker_compose_static_configuration():
     assert "KAFKA_CFG_" not in compose_text
     assert "ALLOW_PLAINTEXT_LISTENER" not in compose_text
 
+    frontend = services["frontend"]
+    frontend_healthcheck = frontend["healthcheck"]
+    frontend_probe = frontend_healthcheck["test"]
+    assert frontend_healthcheck["interval"] == "5s"
+    assert frontend_healthcheck["timeout"] == "3s"
+    assert frontend_healthcheck["retries"] == 30
+    assert frontend_healthcheck["start_period"] == "20s"
+    assert frontend_probe[0] == "CMD-SHELL"
+    assert "node -e" in frontend_probe[1]
+    assert "http://127.0.0.1:3000/" in frontend_probe[1]
+    assert "curl" not in frontend_probe[1]
+    assert "wget" not in frontend_probe[1]
+
     api_env = "\n".join(services["backend-api"]["environment"])
     worker_env = "\n".join(services["detection-worker"]["environment"])
     assert "KAFKA_BOOTSTRAP_SERVERS=kafka:9092" in api_env
@@ -61,3 +74,9 @@ def test_docker_compose_static_configuration():
     assert "`localhost:9094`" in readme
     assert "change-me" not in compose_text
     assert services["migrate"]["command"] == "python -m backend.cli migrate"
+
+    workflow_text = (ROOT / ".github" / "workflows" / "runtime-release-gate.yml").read_text()
+    assert "wait_for_service frontend healthy" in workflow_text
+    assert "wait_for_service frontend running" not in workflow_text
+    assert "frontend_ready=false" in workflow_text
+    assert "curl --fail --silent --show-error --max-time 5 http://127.0.0.1:3000/" in workflow_text

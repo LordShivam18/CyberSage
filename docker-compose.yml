@@ -142,6 +142,16 @@ services:
       - DANGEROUSLY_DISABLE_HOST_CHECK=true
       - WDS_SOCKET_PORT=3000
       - REACT_APP_API_BASE_URL=http://localhost:8000
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://127.0.0.1:3000/', response => process.exit(response.statusCode >= 200 && response.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))\""
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
 
 volumes:
   postgres_data:

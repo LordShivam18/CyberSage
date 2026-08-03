@@ -149,6 +149,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sanitize() {
+            sed -E \
+              -e 's#(postgres(ql)?://)[^[:space:]@]+@#\1***REDACTED***@#g' \
+              -e 's#(Bearer )[A-Za-z0-9._-]+#\1***REDACTED***#g' \
+              -e 's#(token=)[^&[:space:]]+#\1***REDACTED***#g' \
+              -e 's#(JWT_SECRET|POSTGRES_PASSWORD|RUNTIME_ANALYST_PASSWORD|RUNTIME_AUDITOR_PASSWORD)=[^[:space:]]+#\1=***REDACTED***#g'
+          }
+          service_diagnostics() {
+            local service="$1"
+            docker compose ps -a >&2
+            docker compose logs --no-color "${service}" 2>&1 | sanitize >&2 || true
+          }
           wait_for_service() {
             local service="$1"
             local expected_state="$2"
@@ -163,6 +175,28 @@ jobs:
                 health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${container}")"
                 local exit_code
                 exit_code="$(docker inspect --format '{{.State.ExitCode}}' "${container}")"
+                local restart_count
+                restart_count="$(docker inspect --format '{{.RestartCount}}' "${container}")"
+                if [[ "${restart_count}" != "0" ]]; then
+                  echo "Service ${service} restarted unexpectedly during startup." >&2
+                  service_diagnostics "${service}"
+                  return 1
+                fi
+                if [[ "${expected_state}" == "exited" && "${state}" == "exited" && "${exit_code}" != "0" ]]; then
+                  echo "Service ${service} exited with code ${exit_code}." >&2
+                  service_diagnostics "${service}"
+                  return 1
+                fi
+                if [[ "${expected_state}" != "exited" && ( "${state}" == "exited" || "${state}" == "dead" ) ]]; then
+                  echo "Service ${service} exited unexpectedly with code ${exit_code}." >&2
+                  service_diagnostics "${service}"
+                  return 1
+                fi
+                if [[ "${health}" == "unhealthy" ]]; then
+                  echo "Service ${service} became unhealthy." >&2
+                  service_diagnostics "${service}"
+                  return 1
+                fi
                 if [[ "${expected_state}" == "healthy" && "${state}" == "running" && "${health}" == "healthy" ]]; then
                   return 0
                 fi
@@ -176,7 +210,7 @@ jobs:
               sleep 2
             done
             echo "Service ${service} did not reach ${expected_state}." >&2
-            docker compose ps -a
+            service_diagnostics "${service}"
             return 1
           }
 
@@ -185,8 +219,21 @@ jobs:
           wait_for_service migrate exited
           wait_for_service backend-api healthy
           wait_for_service detection-worker running
-          wait_for_service frontend running
-          curl --fail --silent --show-error --retry 15 --retry-delay 2 http://localhost:3000/ > /dev/null
+          wait_for_service frontend healthy
+
+          frontend_ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:3000/ > /dev/null; then
+              frontend_ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "${frontend_ready}" != "true" ]]; then
+            echo "Frontend HTTP endpoint did not become ready." >&2
+            service_diagnostics frontend
+            exit 1
+          fi
 
           if docker compose config --services | grep -Eq '^zookeeper$'; then
             echo "ZooKeeper must not be present in the KRaft Compose configuration." >&2
@@ -457,6 +504,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sanitize() {
+            sed -E \
+              -e 's#(postgres(ql)?://)[^[:space:]@]+@#\1***REDACTED***@#g' \
+              -e 's#(Bearer )[A-Za-z0-9._-]+#\1***REDACTED***#g' \
+              -e 's#(token=)[^&[:space:]]+#\1***REDACTED***#g' \
+              -e 's#(JWT_SECRET|POSTGRES_PASSWORD|RUNTIME_ANALYST_PASSWORD|RUNTIME_AUDITOR_PASSWORD)=[^[:space:]]+#\1=***REDACTED***#g'
+          }
+          service_diagnostics() {
+            local service="$1"
+            docker compose ps -a >&2
+            docker compose logs --no-color "${service}" 2>&1 | sanitize >&2 || true
+          }
           wait_for_service() {
             local service="$1"
             local expected_state="$2"
@@ -469,6 +528,30 @@ jobs:
                 state="$(docker inspect --format '{{.State.Status}}' "${container}")"
                 local health
                 health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${container}")"
+                local exit_code
+                exit_code="$(docker inspect --format '{{.State.ExitCode}}' "${container}")"
+                local restart_count
+                restart_count="$(docker inspect --format '{{.RestartCount}}' "${container}")"
+                if [[ "${restart_count}" != "0" ]]; then
+                  echo "Service ${service} restarted unexpectedly during recovery." >&2
+                  service_diagnostics "${service}"
+                  return 1
+                fi
+                if [[ "${expected_state}" == "exited" && "${state}" == "exited" && "${exit_code}" != "0" ]]; then
+                  echo "Service ${service} exited with code ${exit_code}." >&2
+                  service_diagnostics "${service}"
+                  return 1
+                fi
+                if [[ "${expected_state}" != "exited" && ( "${state}" == "exited" || "${state}" == "dead" ) ]]; then
+                  echo "Service ${service} exited unexpectedly with code ${exit_code}." >&2
+                  service_diagnostics "${service}"
+                  return 1
+                fi
+                if [[ "${health}" == "unhealthy" ]]; then
+                  echo "Service ${service} became unhealthy." >&2
+                  service_diagnostics "${service}"
+                  return 1
+                fi
                 if [[ "${expected_state}" == "healthy" && "${state}" == "running" && "${health}" == "healthy" ]]; then
                   return 0
                 fi
@@ -479,6 +562,7 @@ jobs:
               sleep 2
             done
             echo "Service ${service} did not recover." >&2
+            service_diagnostics "${service}"
             return 1
           }
           wait_for_api_ready() {
