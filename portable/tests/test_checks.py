@@ -126,6 +126,31 @@ class TestSecurityControlChecks:
         findings = SecurityServicesCheck().evaluate(result)
         assert any(f.status == FindingStatus.FAIL for f in findings)
 
+    def test_bitlocker_finding_id_stability(self):
+        from cybersage_portable.checks.security_control_checks import BitLockerCheck
+        volumes = [
+            {"MountPoint": "C:", "ProtectionStatus": "Off"},
+            {"MountPoint": "C:\\", "ProtectionStatus": "Off"},
+            {"MountPoint": "/", "ProtectionStatus": "Off"},
+            {"MountPoint": "", "ProtectionStatus": "Off"},
+            {"MountPoint": None, "ProtectionStatus": "Off"}
+        ]
+        result = make_collector_result("security_controls", {"bitlocker": volumes})
+        findings = BitLockerCheck().evaluate(result)
+        assert len(findings) == 5
+        finding_ids = [f.finding_id for f in findings]
+        
+        # finding IDs must be stable and stripped of backslashes
+        assert finding_ids[0] == "SC-006:c"
+        assert finding_ids[1] == "SC-006:c"
+        assert finding_ids[2] == "SC-006:volume"
+        assert finding_ids[3] == "SC-006:volume"
+        assert finding_ids[4] == "SC-006:unknown"
+        
+        # Repeated evaluation produces same IDs
+        findings2 = BitLockerCheck().evaluate(result)
+        assert [f.finding_id for f in findings2] == finding_ids
+
 
 class TestProcessChecks:
     def test_suspicious_location_warning(self):

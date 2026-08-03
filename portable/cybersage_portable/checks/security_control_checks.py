@@ -288,7 +288,8 @@ class BitLockerCheck(SecurityCheck):
                 continue
             mount = str(vol.get("MountPoint") or "unknown")
             protection = str(vol.get("ProtectionStatus") or "Unknown")
-            finding_id = f"{self.check_id}:{mount.strip('/\\:').lower() or 'volume'}"
+            mount_key = mount.strip("/\\:").lower() or "volume"
+            finding_id = f"{self.check_id}:{mount_key}"
             is_protected = protection.lower() in {"on", "1", "protected"}
             findings.append(self._make_finding(
                 finding_id=finding_id,
