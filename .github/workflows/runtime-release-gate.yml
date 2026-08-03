@@ -1,0 +1,600 @@
+name: Runtime Release Gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-release-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime-release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      APP_ENV: development
+      POSTGRES_USER: ndr_gate
+      POSTGRES_DB: ndr_gate
+      THREAT_INTEL_EXTERNAL_ENABLED: "false"
+      RUNTIME_ANALYST_USERNAME: runtime-analyst
+      RUNTIME_AUDITOR_USERNAME: runtime-auditor
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Generate temporary runtime credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          postgres_password="$(openssl rand -hex 32)"
+          jwt_secret="$(openssl rand -base64 48)"
+          analyst_password="$(openssl rand -hex 24)"
+          auditor_password="$(openssl rand -hex 24)"
+          legacy_db="ndr_legacy_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          artifact_dir="${RUNNER_TEMP}/runtime-release-artifacts"
+
+          echo "::add-mask::${postgres_password}"
+          echo "::add-mask::${jwt_secret}"
+          echo "::add-mask::${analyst_password}"
+          echo "::add-mask::${auditor_password}"
+
+          mkdir -p "${artifact_dir}"
+          {
+            echo "POSTGRES_PASSWORD=${postgres_password}"
+            echo "JWT_SECRET=${jwt_secret}"
+            echo "RUNTIME_ANALYST_PASSWORD=${analyst_password}"
+            echo "RUNTIME_AUDITOR_PASSWORD=${auditor_password}"
+            echo "LEGACY_DB=${legacy_db}"
+            echo "RUNTIME_ARTIFACT_DIR=${artifact_dir}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install local language dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          npm install --prefix frontend
+
+      - name: Validate checkout, Compose, JSON, and workflow YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          docker version
+          docker compose version
+          docker compose config --quiet
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          import yaml
+
+          root = Path.cwd()
+          tracked_json = subprocess.check_output(
+              ["git", "ls-files", "--", "*.json"], text=True
+          ).splitlines()
+          for relative_path in tracked_json:
+              json.loads((root / relative_path).read_text(encoding="utf-8"))
+
+          compose_path = root / "docker-compose.yml"
+          compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+          assert isinstance(compose, dict) and isinstance(compose.get("services"), dict)
+          for service_name, service in compose["services"].items():
+              build = service.get("build")
+              if not build:
+                  continue
+              if isinstance(build, str):
+                  context = root / build
+                  dockerfile = context / "Dockerfile"
+              else:
+                  context = root / build.get("context", ".")
+                  dockerfile = root / build.get("dockerfile", "Dockerfile")
+              assert context.is_dir(), f"Missing build context for {service_name}: {context}"
+              assert dockerfile.is_file(), f"Missing Dockerfile for {service_name}: {dockerfile}"
+
+          workflow_path = root / ".github" / "workflows" / "runtime-release-gate.yml"
+          assert isinstance(yaml.safe_load(workflow_path.read_text(encoding="utf-8")), dict)
+          print(f"Validated {len(tracked_json)} tracked JSON files and Compose build inputs.")
+          PY
+
+      - name: Run local Python and frontend checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall backend tests
+          python -m pytest -q --junitxml="${RUNTIME_ARTIFACT_DIR}/pytest.xml"
+          CI=true npm test --prefix frontend -- --watchAll=false
+          npm run build --prefix frontend
+
+      - name: Build and start Docker Compose services
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose build
+          docker compose up -d
+          docker compose ps
+
+      - name: Wait for required services
+        shell: bash
+        run: |
+          set -euo pipefail
+          wait_for_service() {
+            local service="$1"
+            local expected_state="$2"
+            local attempt
+            for attempt in $(seq 1 90); do
+              local container
+              container="$(docker compose ps -aq "${service}")"
+              if [[ -n "${container}" ]]; then
+                local state
+                state="$(docker inspect --format '{{.State.Status}}' "${container}")"
+                local health
+                health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${container}")"
+                local exit_code
+                exit_code="$(docker inspect --format '{{.State.ExitCode}}' "${container}")"
+                if [[ "${expected_state}" == "healthy" && "${state}" == "running" && "${health}" == "healthy" ]]; then
+                  return 0
+                fi
+                if [[ "${expected_state}" == "running" && "${state}" == "running" ]]; then
+                  return 0
+                fi
+                if [[ "${expected_state}" == "exited" && "${state}" == "exited" && "${exit_code}" == "0" ]]; then
+                  return 0
+                fi
+              fi
+              sleep 2
+            done
+            echo "Service ${service} did not reach ${expected_state}." >&2
+            docker compose ps -a
+            return 1
+          }
+
+          wait_for_service db healthy
+          wait_for_service kafka healthy
+          wait_for_service migrate exited
+          wait_for_service backend-api healthy
+          wait_for_service detection-worker running
+          wait_for_service frontend running
+          curl --fail --silent --show-error --retry 15 --retry-delay 2 http://localhost:3000/ > /dev/null
+
+          if docker compose config --services | grep -Eq '^zookeeper$'; then
+            echo "ZooKeeper must not be present in the KRaft Compose configuration." >&2
+            exit 1
+          fi
+          for service in db kafka migrate backend-api detection-worker frontend; do
+            container="$(docker compose ps -aq "${service}")"
+            restart_count="$(docker inspect --format '{{.RestartCount}}' "${container}")"
+            if [[ "${restart_count}" != "0" ]]; then
+              echo "${service} restarted unexpectedly during startup." >&2
+              exit 1
+            fi
+          done
+
+      - name: Validate PostgreSQL production schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose exec -T db psql --set=ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" <<'SQL'
+          DO $$
+          DECLARE
+            required_table TEXT;
+            required_column TEXT;
+            referenced_table TEXT;
+            column_type TEXT;
+          BEGIN
+            FOREACH required_table IN ARRAY ARRAY[
+              'users', 'normalized_events', 'detections', 'alerts', 'incidents', 'incident_alerts',
+              'analyst_feedback', 'threat_intel_cache', 'model_versions', 'audit_events',
+              'dead_letter_events', 'schema_migrations'
+            ] LOOP
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = required_table
+              ) THEN
+                RAISE EXCEPTION 'Missing expected table %', required_table;
+              END IF;
+            END LOOP;
+
+            FOREACH required_table IN ARRAY ARRAY[
+              'ux_alerts_alert_key', 'ix_alerts_status', 'ix_alerts_severity',
+              'ix_alerts_classification', 'ix_alerts_source_ip', 'ix_alerts_destination_ip',
+              'ix_alerts_risk_score'
+            ] LOOP
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = required_table
+              ) THEN
+                RAISE EXCEPTION 'Missing expected index %', required_table;
+              END IF;
+            END LOOP;
+
+            FOR required_table, required_column IN
+              SELECT * FROM (VALUES
+                ('normalized_events', 'raw_event'), ('normalized_events', 'normalized'),
+                ('detections', 'triggered_rules'), ('detections', 'risk_components'),
+                ('alerts', 'triggered_rules'), ('alerts', 'risk_components'),
+                ('incidents', 'mitre_techniques'), ('dead_letter_events', 'payload')
+              ) AS expected_json(table_name, column_name)
+            LOOP
+              IF NOT EXISTS (
+                SELECT 1
+                FROM pg_attribute attribute
+                JOIN pg_class relation ON relation.oid = attribute.attrelid
+                JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+                WHERE namespace.nspname = 'public'
+                  AND relation.relname = required_table
+                  AND attribute.attname = required_column
+                  AND attribute.atttypid = 'jsonb'::regtype
+                  AND NOT attribute.attisdropped
+              ) THEN
+                RAISE EXCEPTION 'Expected JSONB column %.% is missing', required_table, required_column;
+              END IF;
+            END LOOP;
+
+            FOR required_table, required_column IN
+              SELECT * FROM (VALUES
+                ('normalized_events', 'timestamp'), ('alerts', 'timestamp'),
+                ('incidents', 'created_at'), ('schema_migrations', 'applied_at')
+              ) AS expected_timestamp(table_name, column_name)
+            LOOP
+              SELECT data_type INTO column_type
+              FROM information_schema.columns
+              WHERE table_schema = 'public' AND table_name = required_table AND column_name = required_column;
+              IF column_type <> 'timestamp without time zone' THEN
+                RAISE EXCEPTION 'Expected timestamp column %.% is invalid', required_table, required_column;
+              END IF;
+            END LOOP;
+
+            FOR required_table, referenced_table IN
+              SELECT * FROM (VALUES
+                ('detections', 'normalized_events'), ('alerts', 'detections'),
+                ('incident_alerts', 'incidents'), ('incident_alerts', 'alerts'),
+                ('analyst_feedback', 'alerts')
+              ) AS expected_fk(table_name, referenced_table)
+            LOOP
+              IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.table_constraints constraint_row
+                JOIN information_schema.constraint_column_usage reference_row
+                  ON constraint_row.constraint_catalog = reference_row.constraint_catalog
+                 AND constraint_row.constraint_schema = reference_row.constraint_schema
+                 AND constraint_row.constraint_name = reference_row.constraint_name
+                WHERE constraint_row.table_schema = 'public'
+                  AND constraint_row.table_name = required_table
+                  AND constraint_row.constraint_type = 'FOREIGN KEY'
+                  AND reference_row.table_name = referenced_table
+              ) THEN
+                RAISE EXCEPTION 'Missing foreign key from % to %', required_table, referenced_table;
+              END IF;
+            END LOOP;
+
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE table_schema = 'public' AND table_name = 'incident_alerts'
+                AND constraint_name = 'uq_incident_alert' AND constraint_type = 'UNIQUE'
+            ) THEN
+              RAISE EXCEPTION 'Missing incident-alert uniqueness constraint';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema = 'public' AND table_name = 'schema_migrations'
+                AND column_name = 'applied_at' AND column_default IS NOT NULL
+            ) THEN
+              RAISE EXCEPTION 'Missing migration timestamp default';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE revision = '001_platform_schema') THEN
+              RAISE EXCEPTION 'Migration tracking entry is missing';
+            END IF;
+          END $$;
+          SQL
+
+      - name: Validate legacy migration against temporary PostgreSQL database
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose exec -T db psql --set=ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d postgres \
+            -c "CREATE DATABASE \"${LEGACY_DB}\""
+          docker compose exec -T db psql --set=ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d "${LEGACY_DB}" <<'SQL'
+          CREATE TABLE alerts (
+            id INTEGER PRIMARY KEY,
+            timestamp TIMESTAMP,
+            prediction VARCHAR(128),
+            probability FLOAT,
+            details TEXT
+          );
+          INSERT INTO alerts (id, timestamp, prediction, probability, details) VALUES
+            (101, '2026-01-01 00:00:00', 'LEGACY_ALPHA', 0.91, '{"legacy":"alpha"}'),
+            (102, '2026-01-01 00:05:00', 'LEGACY_BETA', 0.42, '{"legacy":"beta"}');
+          SQL
+          docker compose run --rm --no-deps \
+            -e "DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${LEGACY_DB}" \
+            migrate
+          docker compose exec -T db psql --set=ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d "${LEGACY_DB}" <<'SQL'
+          DO $$
+          BEGIN
+            IF (SELECT COUNT(*) FROM alerts) <> 2 THEN
+              RAISE EXCEPTION 'Legacy rows were lost';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM alerts
+              WHERE id = 101 AND prediction = 'LEGACY_ALPHA' AND probability = 0.91
+                AND details = '{"legacy":"alpha"}'
+            ) OR NOT EXISTS (
+              SELECT 1 FROM alerts
+              WHERE id = 102 AND prediction = 'LEGACY_BETA' AND probability = 0.42
+                AND details = '{"legacy":"beta"}'
+            ) THEN
+              RAISE EXCEPTION 'Legacy identifying values changed';
+            END IF;
+            IF EXISTS (
+              SELECT 1 FROM alerts
+              WHERE status <> 'new' OR severity <> 'high' OR priority <> 'medium'
+                 OR classification <> prediction OR confidence <> probability
+                 OR detection_source <> 'legacy_model' OR risk_score <> probability * 100
+                 OR first_seen IS NULL OR last_seen IS NULL OR updated_at IS NULL
+            ) THEN
+              RAISE EXCEPTION 'Legacy backfill values are incorrect';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_attribute attribute
+              JOIN pg_class relation ON relation.oid = attribute.attrelid
+              WHERE relation.relname = 'alerts' AND attribute.attname = 'triggered_rules'
+                AND attribute.atttypid = 'jsonb'::regtype
+            ) THEN
+              RAISE EXCEPTION 'Legacy alert JSON field is not JSONB';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'normalized_events')
+               OR NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'detections')
+               OR NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'incidents')
+               OR NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'dead_letter_events') THEN
+              RAISE EXCEPTION 'Expected platform tables are missing';
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE revision = '001_platform_schema') THEN
+              RAISE EXCEPTION 'Migration tracking entry is missing';
+            END IF;
+          END $$;
+          SQL
+          docker compose run --rm --no-deps \
+            -e "DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${LEGACY_DB}" \
+            migrate
+          docker compose exec -T db psql --set=ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d "${LEGACY_DB}" \
+            -c "SELECT CASE WHEN COUNT(*) = 1 THEN 1 ELSE 1 / 0 END FROM schema_migrations WHERE revision = '001_platform_schema'" > /dev/null
+          docker compose exec -T db psql --set=ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d postgres \
+            -c "DROP DATABASE \"${LEGACY_DB}\" WITH (FORCE)"
+
+      - name: Create temporary runtime users through the CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose exec -T backend-api python -m backend.cli create-user \
+            --username "${RUNTIME_ANALYST_USERNAME}" \
+            --password "${RUNTIME_ANALYST_PASSWORD}" \
+            --role security_analyst
+          docker compose exec -T backend-api python -m backend.cli create-user \
+            --username "${RUNTIME_AUDITOR_USERNAME}" \
+            --password "${RUNTIME_AUDITOR_PASSWORD}" \
+            --role read_only_auditor
+
+      - name: Validate runtime authentication and WebSocket authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker compose exec -T backend-api env \
+            APP_ENV=production \
+            JWT_SECRET=short \
+            CORS_ORIGINS=http://localhost:3000 \
+            python -c "from backend.config import Settings; Settings().validate_runtime_security()" 2>/dev/null; then
+            echo "Weak production JWT configuration was accepted." >&2
+            exit 1
+          fi
+          api_container="$(docker compose ps -q backend-api)"
+          docker cp scripts/runtime_release_gate.py "${api_container}:/tmp/runtime_release_gate.py"
+          docker compose exec -T \
+            -e "RUNTIME_ANALYST_USERNAME=${RUNTIME_ANALYST_USERNAME}" \
+            -e "RUNTIME_ANALYST_PASSWORD=${RUNTIME_ANALYST_PASSWORD}" \
+            -e "RUNTIME_AUDITOR_USERNAME=${RUNTIME_AUDITOR_USERNAME}" \
+            -e "RUNTIME_AUDITOR_PASSWORD=${RUNTIME_AUDITOR_PASSWORD}" \
+            backend-api python /tmp/runtime_release_gate.py auth-ws
+
+      - name: Validate Kafka end-to-end processing and idempotency
+        shell: bash
+        run: |
+          set -euo pipefail
+          event_id="runtime-kafka-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker compose exec -T backend-api python /tmp/runtime_release_gate.py kafka --event-id "${event_id}"
+
+      - name: Validate Zeek and Suricata fixture processing
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_container="$(docker compose ps -q backend-api)"
+          docker compose exec -T backend-api mkdir -p /tmp/runtime-fixtures
+          docker cp tests/fixtures/zeek_conn.jsonl "${api_container}:/tmp/runtime-fixtures/zeek_conn.jsonl"
+          docker cp tests/fixtures/suricata_eve.jsonl "${api_container}:/tmp/runtime-fixtures/suricata_eve.jsonl"
+          docker compose exec -T backend-api python -m backend.cli process-jsonl /tmp/runtime-fixtures/zeek_conn.jsonl --source-hint zeek
+          docker compose exec -T backend-api python -m backend.cli process-jsonl /tmp/runtime-fixtures/suricata_eve.jsonl --source-hint suricata
+          docker compose exec -T backend-api python /tmp/runtime_release_gate.py fixtures
+
+      - name: Validate dead-letter handling
+        shell: bash
+        run: |
+          set -euo pipefail
+          event_id="runtime-dead-letter-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker compose exec -T backend-api python /tmp/runtime_release_gate.py dead-letter --event-id "${event_id}"
+          worker_container="$(docker compose ps -q detection-worker)"
+          [[ "$(docker inspect --format '{{.State.Status}}' "${worker_container}")" == "running" ]]
+
+      - name: Validate Kafka, PostgreSQL, and worker recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          wait_for_service() {
+            local service="$1"
+            local expected_state="$2"
+            local attempt
+            for attempt in $(seq 1 60); do
+              local container
+              container="$(docker compose ps -aq "${service}")"
+              if [[ -n "${container}" ]]; then
+                local state
+                state="$(docker inspect --format '{{.State.Status}}' "${container}")"
+                local health
+                health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${container}")"
+                if [[ "${expected_state}" == "healthy" && "${state}" == "running" && "${health}" == "healthy" ]]; then
+                  return 0
+                fi
+                if [[ "${expected_state}" == "running" && "${state}" == "running" ]]; then
+                  return 0
+                fi
+              fi
+              sleep 2
+            done
+            echo "Service ${service} did not recover." >&2
+            return 1
+          }
+          wait_for_api_ready() {
+            local attempt
+            for attempt in $(seq 1 60); do
+              if curl --silent --show-error --max-time 3 http://localhost:8000/api/v1/ready 2>/dev/null | \
+                python -c 'import json, sys; value = json.load(sys.stdin); sys.exit(0 if value.get("ready") is True and value.get("database", {}).get("ok") is True else 1)'; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "API did not become ready." >&2
+            return 1
+          }
+
+          docker compose restart kafka
+          wait_for_service kafka healthy
+          curl --fail --silent --show-error http://localhost:8000/api/v1/health > /dev/null
+          docker compose exec -T backend-api python /tmp/runtime_release_gate.py kafka \
+            --event-id "runtime-kafka-recovery-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          baseline_data="$(docker compose exec -T db psql -At -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+            -c 'SELECT (SELECT COUNT(*) FROM alerts), (SELECT COUNT(*) FROM incidents)')"
+          baseline_migration="$(docker compose exec -T db psql -At -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+            -c "SELECT COUNT(*), MAX(revision) FROM schema_migrations")"
+
+          docker compose restart db
+          wait_for_service db healthy
+          wait_for_api_ready
+
+          docker compose stop db
+          unavailable_seen=false
+          for attempt in $(seq 1 20); do
+            if curl --silent --show-error --max-time 3 http://localhost:8000/api/v1/ready 2>/dev/null | \
+              python -c 'import json, sys; value = json.load(sys.stdin); sys.exit(0 if value.get("ready") is False and value.get("database", {}).get("ok") is False else 1)'; then
+              unavailable_seen=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "${unavailable_seen}" != "true" ]]; then
+            echo "API readiness did not report PostgreSQL unavailability." >&2
+            exit 1
+          fi
+
+          docker compose start db
+          wait_for_service db healthy
+          wait_for_api_ready
+          after_data="$(docker compose exec -T db psql -At -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+            -c 'SELECT (SELECT COUNT(*) FROM alerts), (SELECT COUNT(*) FROM incidents)')"
+          after_migration="$(docker compose exec -T db psql -At -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+            -c "SELECT COUNT(*), MAX(revision) FROM schema_migrations")"
+          [[ "${baseline_data}" == "${after_data}" ]]
+          [[ "${baseline_migration}" == "${after_migration}" ]]
+
+          docker compose restart detection-worker
+          wait_for_service detection-worker running
+          docker compose exec -T backend-api python /tmp/runtime_release_gate.py kafka \
+            --event-id "runtime-worker-recovery-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: Run final release-gate checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose ps
+          docker compose config --quiet
+          python -m pytest -q
+          CI=true npm test --prefix frontend -- --watchAll=false
+          npm run build --prefix frontend
+          git diff --check
+          tracked_generated="$(git ls-files -- \
+            'frontend/build/**' 'results/**' '*.db' '*.sqlite3' '*.log' '*.pth' '*.gz' \
+            '.env' '.env.local' '.env.*.local')"
+          if [[ -n "${tracked_generated}" ]]; then
+            echo "Generated runtime artefacts are tracked:" >&2
+            echo "${tracked_generated}" >&2
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "The release gate left tracked or unignored workspace changes." >&2
+            git status --short
+            exit 1
+          fi
+
+      - name: Collect sanitized failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "${RUNTIME_ARTIFACT_DIR}"
+          docker compose ps -a | tee "${RUNTIME_ARTIFACT_DIR}/compose-ps.txt"
+          sanitize() {
+            sed -E \
+              -e 's#(postgres(ql)?://)[^[:space:]@]+@#\1***REDACTED***@#g' \
+              -e 's#(Bearer )[A-Za-z0-9._-]+#\1***REDACTED***#g' \
+              -e 's#(token=)[^&[:space:]]+#\1***REDACTED***#g' \
+              -e 's#(JWT_SECRET|POSTGRES_PASSWORD)=[^[:space:]]+#\1=***REDACTED***#g'
+          }
+          for service in db kafka migrate backend-api detection-worker frontend; do
+            docker compose logs --no-color "${service}" 2>&1 | sanitize > "${RUNTIME_ARTIFACT_DIR}/${service}.log"
+          done
+
+      - name: Drop temporary legacy validation database
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          case "${LEGACY_DB}" in
+            ndr_legacy_*) ;;
+            *) exit 1 ;;
+          esac
+          if [[ -n "$(docker compose ps -q db)" ]]; then
+            docker compose exec -T db psql -U "${POSTGRES_USER}" -d postgres \
+              -c "DROP DATABASE IF EXISTS \"${LEGACY_DB}\" WITH (FORCE)" > /dev/null
+          fi
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-release-gate-${{ github.run_id }}
+          path: ${{ env.RUNTIME_ARTIFACT_DIR }}
+          if-no-files-found: warn
+
+      - name: Remove temporary Docker environment
+        if: always()
+        shell: bash
+        run: docker compose down -v --remove-orphans

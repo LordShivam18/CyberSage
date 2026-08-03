@@ -21,3 +21,4 @@ SQLAlchemy
 # Testing
 pytest
 httpx
+PyYAML

@@ -256,6 +256,14 @@ docker compose config
 
 Tests do not require live external threat-intelligence APIs.
 
+## Runtime Release Gate
+
+The `Runtime Release Gate` GitHub Actions workflow can be started manually from the repository's **Actions** tab by selecting **Runtime Release Gate** and choosing **Run workflow**. It also runs for pull requests and pushes to `main`.
+
+The workflow uses a temporary GitHub-hosted Docker Compose environment to validate the PostgreSQL migration path (including legacy alert preservation), Kafka KRaft startup and recovery, API and worker health, CLI-created users, authentication and WebSocket authorization, Kafka event idempotency, Zeek and Suricata fixtures, dead-letter handling, and the local Python and React checks. External threat-intelligence providers remain disabled.
+
+No repository or GitHub secrets are required: the PostgreSQL password, JWT secret, and temporary user passwords are generated per run, masked, and discarded during cleanup. This is a release-validation environment only, not a production deployment. On failure, use the failed workflow run's **Artifacts** section to download sanitized Compose logs and the pytest report.
+
 ## Troubleshooting
 
 - API reports model fallback: place compatible `results/model/transformer_model.pth`, `results/scaler.gz`, and optional `results/model/metadata.json`.
