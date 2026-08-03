@@ -1,0 +1,16 @@
+[
+  {
+    "TaskName": "GoogleUpdateTaskMachineCore",
+    "TaskPath": "\\",
+    "State": "Ready",
+    "Actions": ["C:\\Program Files (x86)\\Google\\Update\\GoogleUpdate.exe"],
+    "Triggers": ["TimeTrigger"]
+  },
+  {
+    "TaskName": "SuspiciousTask",
+    "TaskPath": "\\CustomTasks\\",
+    "State": "Ready",
+    "Actions": ["C:\\Users\\Public\\malware.bat"],
+    "Triggers": ["LogonTrigger"]
+  }
+]

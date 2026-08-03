@@ -1,0 +1,27 @@
+{
+  "user_roots": [
+    {
+      "thumbprint": "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2",
+      "subject": "CN=DigiCert Global Root CA, OU=www.digicert.com, O=DigiCert Inc, C=US",
+      "issuer": "CN=DigiCert Global Root CA, OU=www.digicert.com, O=DigiCert Inc, C=US",
+      "not_before": "2006-11-10T00:00:00+00:00",
+      "not_after": "2031-11-10T00:00:00+00:00",
+      "expired": false,
+      "self_signed": true,
+      "recently_installed": "unavailable"
+    },
+    {
+      "thumbprint": "DEADBEEF1234DEADBEEF1234DEADBEEF12341234",
+      "subject": "CN=Expired Test Root",
+      "issuer": "CN=Expired Test Root",
+      "not_before": "2010-01-01T00:00:00+00:00",
+      "not_after": "2020-01-01T00:00:00+00:00",
+      "expired": true,
+      "self_signed": true,
+      "recently_installed": "unavailable"
+    }
+  ],
+  "machine_roots": [],
+  "user_roots_accessible": true,
+  "machine_roots_accessible": true
+}

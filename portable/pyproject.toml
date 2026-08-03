@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "cybersage-portable"
+version = "1.0.0"
+description = "CyberSage Portable Security Assessment – Windows-first offline defensive scanner"
+readme = "README-portable.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "CyberSage Team" }]
+keywords = ["security", "assessment", "windows", "portable", "offline"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+
+# Runtime-only dependencies – standard library only where possible.
+# pywin32 is listed as optional so the package installs cleanly on CI (Linux/macOS).
+dependencies = []
+
+[project.optional-dependencies]
+# Install on Windows for full functionality.
+win = ["pywin32>=306"]
+# Required for building the standalone portable executable.
+build = ["pyinstaller>=6.5"]
+# Required for running tests.
+dev = [
+    "pytest>=8.1",
+    "pytest-mock>=3.14",
+]
+
+[project.scripts]
+cybersage-portable = "cybersage_portable.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cybersage_portable*"]
+
+[tool.setuptools.package-data]
+cybersage_portable = [
+    "py.typed",
+    "../schemas/*.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "windows_only: skip on non-Windows platforms",
+]

@@ -86,3 +86,22 @@ export const alertWebSocketUrl = () => {
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     return appendToken(url.toString());
 };
+
+export const fetchAssessments = async () => {
+    const response = await api.get('/api/v1/assessments', { headers: authHeaders() });
+    return response.data;
+};
+
+export const fetchAssessmentDetails = async (assessmentId) => {
+    const response = await api.get(`/api/v1/assessments/${assessmentId}`, { headers: authHeaders() });
+    return response.data;
+};
+
+export const importAssessment = async (reportData, createAlerts) => {
+    const response = await api.post(
+        '/api/v1/assessments/import',
+        { report: reportData, create_alerts: createAlerts },
+        { headers: authHeaders() }
+    );
+    return response.data;
+};

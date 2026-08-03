@@ -1,0 +1,22 @@
+[
+  {
+    "browser": "chrome",
+    "extension_id": "nmmhkkegccagdldgiimedpiccmgmieda",
+    "name": "Chrome Web Store Payments",
+    "version": "1.0.0.6",
+    "description": "Official Google extension",
+    "permissions": [],
+    "update_url": "https://clients2.google.com/service/update2/crx",
+    "unpacked": false
+  },
+  {
+    "browser": "chrome",
+    "extension_id": "aaabbbcccddd",
+    "name": "Unpacked Dev Extension",
+    "version": "0.1.0",
+    "description": "Test dev extension",
+    "permissions": ["tabs", "webRequest", "storage"],
+    "update_url": "",
+    "unpacked": true
+  }
+]

@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cybersage/schemas/assessment_report_v1.json",
+  "title": "CyberSage Portable Assessment Report",
+  "description": "Canonical schema for assessment reports produced by cybersage-portable and consumed by the CyberSage backend importer. Schema version: assessment.v1.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "assessment_id",
+    "scanner_version",
+    "score_algorithm",
+    "privacy_mode",
+    "started_at",
+    "completed_at",
+    "host",
+    "privilege_level",
+    "checks_attempted",
+    "coverage",
+    "posture_score",
+    "findings",
+    "checksum_algorithm",
+    "checksum"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "assessment.v1",
+      "description": "Identifies the report format version. Importers must reject unknown values."
+    },
+    "assessment_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUIDv4 that uniquely identifies this assessment run. Used for idempotent import."
+    },
+    "scanner_version": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "Semantic version of cybersage-portable that produced this report."
+    },
+    "score_algorithm": {
+      "type": "string",
+      "enum": ["posture_score_v1"],
+      "description": "Algorithm identifier for the posture score. Backend recomputes and verifies."
+    },
+    "privacy_mode": {
+      "type": "string",
+      "enum": ["standard", "redacted", "minimal"],
+      "description": "Redaction level applied before the report was written."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp when the assessment started."
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp when the assessment completed."
+    },
+    "host": {
+      "type": "object",
+      "description": "Host summary. Values are redacted according to privacy_mode.",
+      "required": ["hostname", "os_name", "os_version", "architecture"],
+      "additionalProperties": false,
+      "properties": {
+        "hostname": { "type": "string", "maxLength": 253 },
+        "os_name": { "type": "string", "maxLength": 256 },
+        "os_version": { "type": "string", "maxLength": 64 },
+        "os_build": { "type": ["string", "null"], "maxLength": 32 },
+        "architecture": { "type": "string", "maxLength": 32 },
+        "last_boot": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "privilege_level": {
+      "type": "string",
+      "enum": ["standard", "administrator"],
+      "description": "Privilege level of the scanner process during collection."
+    },
+    "checks_attempted": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of security checks attempted."
+    },
+    "coverage": {
+      "type": "object",
+      "description": "Coverage statistics. unavailable/permission_required/error reduce coverage, not score.",
+      "required": ["attempted", "passed", "failed", "warned", "unavailable", "permission_required", "errors", "coverage_pct"],
+      "additionalProperties": false,
+      "properties": {
+        "attempted": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "warned": { "type": "integer", "minimum": 0 },
+        "unavailable": { "type": "integer", "minimum": 0 },
+        "permission_required": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "coverage_pct": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 100.0,
+          "description": "Percentage of checks that produced a definitive result."
+        }
+      }
+    },
+    "posture_score": {
+      "type": "object",
+      "description": "Posture score for prioritization only. Displays limitations caveat.",
+      "required": ["score", "algorithm", "components", "caveat"],
+      "additionalProperties": false,
+      "properties": {
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Posture score 0-100. Lower is worse. Not a guarantee of security."
+        },
+        "algorithm": {
+          "type": "string",
+          "enum": ["posture_score_v1"]
+        },
+        "components": {
+          "type": "object",
+          "description": "Score deduction breakdown by severity and finding count.",
+          "additionalProperties": false,
+          "properties": {
+            "fail_critical": { "type": "integer", "minimum": 0 },
+            "fail_high": { "type": "integer", "minimum": 0 },
+            "fail_medium": { "type": "integer", "minimum": 0 },
+            "fail_low": { "type": "integer", "minimum": 0 },
+            "deduction_critical": { "type": "integer", "minimum": 0 },
+            "deduction_high": { "type": "integer", "minimum": 0 },
+            "deduction_medium": { "type": "integer", "minimum": 0 },
+            "deduction_low": { "type": "integer", "minimum": 0 },
+            "total_deduction": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "caveat": {
+          "type": "string",
+          "description": "Mandatory plain-language limitation statement."
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 2000,
+      "description": "All findings from this assessment run.",
+      "items": {
+        "type": "object",
+        "required": [
+          "check_id",
+          "finding_id",
+          "title",
+          "category",
+          "severity",
+          "confidence",
+          "status",
+          "evidence",
+          "explanation",
+          "remediation",
+          "admin_required",
+          "may_disrupt",
+          "references",
+          "collected_at",
+          "collector_version",
+          "device_impact"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "check_id": {
+            "type": "string",
+            "pattern": "^[A-Z]{2,8}-[0-9]{3}$",
+            "description": "Identifies the check definition rule (e.g. SC-001)."
+          },
+          "finding_id": {
+            "type": "string",
+            "maxLength": 512,
+            "description": "Stable identifier for the specific affected entity. Combines check_id with a normalized entity key. Never derived from volatile data such as PIDs."
+          },
+          "title": { "type": "string", "maxLength": 256 },
+          "category": {
+            "type": "string",
+            "enum": ["operating_system", "security_controls", "accounts", "processes", "persistence", "network", "browser", "certificates"],
+            "description": "Matches the eight collector domains."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low", "informational"]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pass", "informational", "warning", "fail", "unavailable", "permission_required", "error"]
+          },
+          "evidence": {
+            "type": "object",
+            "description": "Key/value pairs of evidence. All string values are bounded and escaped.",
+            "maxProperties": 32,
+            "additionalProperties": {
+              "oneOf": [
+                { "type": "string", "maxLength": 4096 },
+                { "type": "number" },
+                { "type": "boolean" },
+                { "type": "null" },
+                {
+                  "type": "array",
+                  "maxItems": 200,
+                  "items": { "type": "string", "maxLength": 1024 }
+                }
+              ]
+            }
+          },
+          "explanation": { "type": "string", "maxLength": 2048 },
+          "remediation": { "type": "string", "maxLength": 2048 },
+          "device_impact": { "type": "string", "maxLength": 512 },
+          "admin_required": { "type": "boolean" },
+          "may_disrupt": { "type": "boolean" },
+          "references": {
+            "type": "array",
+            "maxItems": 10,
+            "items": { "type": "string", "maxLength": 512 }
+          },
+          "collected_at": { "type": "string", "format": "date-time" },
+          "collector_version": { "type": "string", "maxLength": 64 }
+        }
+      }
+    },
+    "checksum_algorithm": {
+      "type": "string",
+      "const": "sha256",
+      "description": "Algorithm used to compute the checksum field."
+    },
+    "checksum": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 hex digest over the canonical JSON payload (sorted keys, compact separators, checksum field excluded, UTF-8 encoded). Proves integrity, not publisher authenticity. The report is self-asserted until a future signing design is implemented."
+    }
+  }
+}

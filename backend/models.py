@@ -244,3 +244,98 @@ class DeadLetterEvent(Base):
     payload = Column(JSONType, nullable=False, default=dict)
     error = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+
+
+# ---------------------------------------------------------------------------
+# Portable Assessment -- v1
+# ---------------------------------------------------------------------------
+
+
+class AssessmentRun(Base):
+    """
+    One portable assessment import.
+
+    assessment_id is the UUID from the scanner JSON report.
+    report_checksum is the SHA-256 of the canonical JSON payload (integrity only).
+
+    Alert creation rules enforced at API layer:
+    * create_alerts must be explicitly requested (default False).
+    * Only administrator or security_analyst roles may request alert creation.
+    * Alerts only for findings with status=fail AND severity high or critical.
+    * detection_source is always portable_assessment.
+    * Never create alerts for warning, unavailable, permission_required, or error.
+    """
+
+    __tablename__ = "assessment_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    assessment_id = Column(String(128), unique=True, nullable=False, index=True)
+    scanner_version = Column(String(64), nullable=False)
+    schema_version = Column(String(32), nullable=False, default="assessment.v1")
+    score_algorithm = Column(String(64), nullable=False, default="posture_score_v1")
+    privacy_mode = Column(String(32), nullable=False, default="standard")
+    privilege_level = Column(String(32), nullable=False, default="standard")
+    started_at = Column(DateTime, nullable=False)
+    completed_at = Column(DateTime, nullable=False)
+    imported_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+    imported_by = Column(String(255), nullable=True, index=True)
+    host_hostname = Column(String(255), nullable=True)
+    host_os_name = Column(String(128), nullable=True)
+    host_os_version = Column(String(128), nullable=True)
+    host_os_build = Column(String(64), nullable=True)
+    host_architecture = Column(String(64), nullable=True)
+    checks_attempted = Column(Integer, nullable=False, default=0)
+    coverage_pct = Column(Float, nullable=True)
+    coverage_failed = Column(Integer, nullable=False, default=0)
+    coverage_unavailable = Column(Integer, nullable=False, default=0)
+    coverage_permission_required = Column(Integer, nullable=False, default=0)
+    coverage_errors = Column(Integer, nullable=False, default=0)
+    posture_score = Column(Integer, nullable=False, default=0, index=True)
+    posture_score_components = Column(JSONType, nullable=True)
+    posture_score_caveat = Column(Text, nullable=True)
+    report_checksum = Column(String(128), nullable=False)
+    report_checksum_algorithm = Column(String(32), nullable=False, default="sha256")
+    checksum_verified = Column(Boolean, nullable=False, default=False)
+    full_report = Column(JSONType, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+    findings = relationship("AssessmentFinding", back_populates="assessment_run", cascade="all, delete-orphan")
+
+
+class AssessmentFinding(Base):
+    """
+    One finding from a portable assessment.
+    UNIQUE (assessment_run_id, finding_id) enforces import idempotency.
+    finding_id is the stable entity key -- never a PID.
+    """
+
+    __tablename__ = "assessment_findings"
+    __table_args__ = (
+        UniqueConstraint("assessment_run_id", "finding_id", name="uq_assessment_run_finding"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    assessment_run_id = Column(
+        Integer, ForeignKey("assessment_runs.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    check_id = Column(String(32), nullable=False, index=True)
+    finding_id = Column(String(512), nullable=False)
+    title = Column(String(512), nullable=False)
+    category = Column(String(64), nullable=False, index=True)
+    severity = Column(String(32), nullable=False, default="informational", index=True)
+    confidence = Column(String(32), nullable=False, default="medium")
+    status = Column(String(32), nullable=False, default="informational", index=True)
+    evidence = Column(JSONType, nullable=True)
+    explanation = Column(Text, nullable=True)
+    remediation = Column(Text, nullable=True)
+    device_impact = Column(String(512), nullable=True)
+    admin_required = Column(Boolean, nullable=False, default=False)
+    may_disrupt = Column(Boolean, nullable=False, default=False)
+    references_json = Column(JSONType, nullable=True)
+    collected_at = Column(DateTime, nullable=True)
+    collector_version = Column(String(32), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    assessment_run = relationship("AssessmentRun", back_populates="findings")

@@ -1,0 +1,6 @@
+[
+  {"Name": "WinDefend", "Status": "Running", "StartType": "Automatic"},
+  {"Name": "wscsvc", "Status": "Running", "StartType": "Automatic"},
+  {"Name": "WdNisSvc", "Status": "Running", "StartType": "Manual"},
+  {"Name": "SecurityHealthService", "Status": "Running", "StartType": "Automatic"}
+]

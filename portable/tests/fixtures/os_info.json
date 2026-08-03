@@ -1,0 +1,19 @@
+{
+  "platform": "win32",
+  "python_version": "3.11.9",
+  "os_version": {
+    "Caption": "Microsoft Windows 11 Pro",
+    "Version": "10.0.22631",
+    "BuildNumber": "22631",
+    "OSArchitecture": "64-bit",
+    "LastBootUpTime": "2026-07-30T08:00:00+00:00"
+  },
+  "pending_restart": {
+    "cbs": false,
+    "wu": false
+  },
+  "update_service": {
+    "Status": "Running",
+    "StartType": "Automatic"
+  }
+}

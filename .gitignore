@@ -67,3 +67,8 @@ node_modules/
 venv/
 __pycache__/
 data/
+
+# --- Portable Scanner ---
+portable/dist/
+portable/build/
+portable/*.spec

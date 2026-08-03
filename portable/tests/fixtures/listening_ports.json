@@ -1,0 +1,6 @@
+[
+  {"LocalAddress": "127.0.0.1", "LocalPort": 8080, "OwningProcess": 1234, "State": "Listen"},
+  {"LocalAddress": "0.0.0.0", "LocalPort": 445, "OwningProcess": 4, "State": "Listen"},
+  {"LocalAddress": "127.0.0.1", "LocalPort": 3389, "OwningProcess": 999, "State": "Listen"},
+  {"LocalAddress": "0.0.0.0", "LocalPort": 5985, "OwningProcess": 800, "State": "Listen"}
+]

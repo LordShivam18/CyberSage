@@ -29,6 +29,7 @@ import {
 import AlertsTable from './components/AlertsTable';
 import ModelMonitoring from './components/ModelMonitoring';
 import PredictionForm from './components/PredictionForm';
+import AssessmentsView from './components/AssessmentsView';
 import './Dashboard.css';
 
 const tabs = [
@@ -37,6 +38,7 @@ const tabs = [
     { id: 'incidents', label: 'Incidents', icon: AlertTriangle },
     { id: 'events', label: 'Events', icon: Database },
     { id: 'model', label: 'Model', icon: Brain },
+    { id: 'assessments', label: 'Assessments', icon: ShieldCheck },
 ];
 
 const emptyPage = { total: 0, items: [] };
@@ -552,6 +554,10 @@ function Dashboard() {
 
             {!isLoading && activeTab === 'model' && (
                 <ModelView modelStatus={modelStatus} />
+            )}
+            
+            {!isLoading && activeTab === 'assessments' && (
+                <AssessmentsView permissionError={permissionError} />
             )}
 
             <footer className="platform-note">

@@ -275,12 +275,52 @@ python -m backend.train_anomaly_model
 ```
 
 Run a leakage-aware Transformer training pass on a local CIC-style CSV sample:
+- `POST /api/v1/threat-intel/lookup`
+- `GET /api/v1/audit-events`
+- `WS /api/v1/ws/alerts`
+
+List endpoints support pagination and practical filters such as severity, status, classification, source IP, destination IP, detection source, date range, and MITRE technique where applicable.
+
+## Demo Flow
+
+Send one authorized lab synthetic event through Kafka:
+
+```powershell
+python -m backend.kafka_producer
+```
+
+Process Zeek or Suricata samples without Kafka:
+
+```powershell
+python -m backend.cli process-jsonl tests\fixtures\zeek_conn.jsonl --source-hint zeek
+python -m backend.cli process-jsonl tests\fixtures\suricata_eve.jsonl --source-hint suricata
+```
+
+Train the lightweight anomaly detector:
+
+```powershell
+python -m backend.train_anomaly_model
+```
+
+Run a leakage-aware Transformer training pass on a local CIC-style CSV sample:
 
 ```powershell
 python -m backend.train_model --data data\MachineLearningCVE.csv --sample-frac 0.1
 ```
 
 Do not run full CIC-IDS2017 training as part of normal local verification.
+
+## Portable Scanner
+
+The repository also includes `CyberSage-Portable`, a standalone offline Windows executable designed for defensive posture assessments on systems without permanent agents.
+
+**Architecture:**
+- Built using PyInstaller in `onedir` mode.
+- Abstracted collectors and checks ensuring safe telemetry gathering (no `shell=True`).
+- Produces canonical JSON output utilizing strict ordering and separators to generate a reliable SHA-256 checksum for integrity verification. Note: A checksum detects modification, but it does not prove who produced the report. Reports are unsigned and self-asserted.
+- Integrates directly with the CyberSage Server via the `/api/v1/assessments/import` endpoint, which validates the payload and optionally promotes `fail` findings to SOC alerts based on severity and analyst authorization.
+
+See `docs/portable-assessment.md` for detailed build and usage instructions.
 
 ## Tests And Checks
 
@@ -318,3 +358,4 @@ Compose uses the official `apache/kafka:3.9.2` image as a single combined broker
 - Add production-grade auth hardening, refresh tokens, and centralized rate limiting.
 - Add formal Alembic migrations if the schema grows beyond the built-in runner.
 - Add drift metrics once a representative baseline is collected.
+- Implement PyInstaller one-file (`--onefile`) execution mode for the Portable Scanner (currently restricted to `onedir` for stability).

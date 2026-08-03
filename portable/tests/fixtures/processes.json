@@ -1,0 +1,26 @@
+[
+  {
+    "ProcessId": 4,
+    "Name": "System",
+    "ExecutablePath": null,
+    "ParentProcessId": 0,
+    "CreationDate": "2026-08-01T08:00:00+00:00",
+    "CommandLine": null
+  },
+  {
+    "ProcessId": 1234,
+    "Name": "chrome.exe",
+    "ExecutablePath": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "ParentProcessId": 1000,
+    "CreationDate": "2026-08-03T10:00:00+00:00",
+    "CommandLine": "chrome.exe --some-flag"
+  },
+  {
+    "ProcessId": 5678,
+    "Name": "suspicious.exe",
+    "ExecutablePath": "C:\\Users\\testuser\\AppData\\Local\\Temp\\suspicious.exe",
+    "ParentProcessId": 1000,
+    "CreationDate": "2026-08-03T11:00:00+00:00",
+    "CommandLine": "suspicious.exe"
+  }
+]

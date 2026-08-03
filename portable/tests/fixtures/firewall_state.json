@@ -1,0 +1,5 @@
+[
+  {"Name": "Domain", "Enabled": true, "DefaultInboundAction": "Block", "DefaultOutboundAction": "Allow"},
+  {"Name": "Private", "Enabled": true, "DefaultInboundAction": "Block", "DefaultOutboundAction": "Allow"},
+  {"Name": "Public", "Enabled": true, "DefaultInboundAction": "Block", "DefaultOutboundAction": "Allow"}
+]
