@@ -264,6 +264,8 @@ The workflow uses a temporary GitHub-hosted Docker Compose environment to valida
 
 No repository or GitHub secrets are required: the PostgreSQL password, JWT secret, and temporary user passwords are generated per run, masked, and discarded during cleanup. This is a release-validation environment only, not a production deployment. On failure, use the failed workflow run's **Artifacts** section to download sanitized Compose logs and the pytest report.
 
+Compose uses the official `apache/kafka:3.9.2` image as a single combined broker/controller KRaft node. Kafka storage is intentionally ephemeral for development and CI, so a fresh `docker compose up` starts with clean broker metadata.
+
 ## Troubleshooting
 
 - API reports model fallback: place compatible `results/model/transformer_model.pth`, `results/scaler.gz`, and optional `results/model/metadata.json`.

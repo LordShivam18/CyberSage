@@ -130,6 +130,13 @@ jobs:
           CI=true npm test --prefix frontend -- --watchAll=false
           npm run build --prefix frontend
 
+      - name: Pull pinned external service images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull apache/kafka:3.9.2
+          docker pull postgres:15-alpine
+
       - name: Build and start Docker Compose services
         shell: bash
         run: |
