@@ -22,6 +22,11 @@ results/
 *.pth
 *.gz
 
+# Local model-training data. Example manifests document the contract without data.
+datasets/*
+!datasets/manifests/
+!datasets/manifests/*.example.yaml
+
 # --- Node.js / React ---
 node_modules/
 npm-debug.log*

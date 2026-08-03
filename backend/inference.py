@@ -1,69 +1,32 @@
-import hashlib
+"""Runtime inference with strict governance checks for newly registered models."""
+
+from __future__ import annotations
+
 import json
-import math
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import joblib
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 
 from .config import settings
 from .detection_types import DetectorResult
+from .model_architecture import ThreatTransformer
+from .model_governance import GovernanceError, evaluate_drift, file_checksum, validate_model_metadata
 from .telemetry import LEGACY_FEATURES, NormalizedNetworkEvent, features_from_event
-
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
-        super().__init__()
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer("pe", pe)
-
-    def forward(self, x):
-        return x + self.pe[: x.size(0), :]
-
-
-class ThreatTransformer(nn.Module):
-    def __init__(self, input_dim, d_model, nhead, nlayers, num_classes=2):
-        super().__init__()
-        self.d_model = d_model
-        self.encoder = nn.Linear(input_dim, d_model)
-        self.pos_encoder = PositionalEncoding(d_model)
-        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, nlayers)
-        self.decoder = nn.Linear(d_model, num_classes)
-
-    def forward(self, src):
-        src = self.encoder(src) * math.sqrt(self.d_model)
-        src = self.pos_encoder(src)
-        output = self.transformer_encoder(src)
-        output = output[:, -1, :]
-        return self.decoder(output)
-
-
-def _file_checksum(path: Path) -> Optional[str]:
-    if not path.exists():
-        return None
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise GovernanceError("Model metadata must be a JSON object")
+    return value
 
 
 def _infer_num_classes(state_dict: Dict[str, Any]) -> int:
@@ -94,41 +57,76 @@ class ModelDetector:
         self.class_mapping: Dict[int, str] = {0: "BENIGN", 1: "ATTACK"}
         self.model_name = "ThreatTransformer"
         self.model_version = "unavailable"
-        self.checksum = None
+        self.checksum: Optional[str] = None
         self.error: Optional[str] = None
+        self.sequence_length = 10
+        self.lifecycle_state = "degraded_fallback"
+        self.legacy_compatibility = False
+        self.last_drift: Dict[str, Any] = {
+            "status": "insufficient_data",
+            "reason": "No production feature window has been evaluated.",
+        }
         self._load()
+
+    def _set_fallback(self, reason: str) -> None:
+        self.model = None
+        self.scaler = None
+        self.error = reason
+        self.lifecycle_state = "degraded_fallback"
 
     def _load(self) -> None:
         model_path = settings.resolve_path(settings.model_path)
         scaler_path = settings.resolve_path(settings.scaler_path)
         metadata_path = settings.resolve_path(settings.model_metadata_path)
-        self.checksum = _file_checksum(model_path)
+        self.checksum = file_checksum(model_path) if model_path.exists() else None
         try:
-            self.metadata = _load_json(metadata_path)
-            if scaler_path.exists():
-                self.scaler = joblib.load(scaler_path)
-                if hasattr(self.scaler, "get_feature_names_out"):
-                    self.feature_names = list(self.scaler.get_feature_names_out())
-            self.feature_names = self.metadata.get("feature_list") or self.feature_names or LEGACY_FEATURES
-            class_mapping = self.metadata.get("class_mapping") or {"0": "BENIGN", "1": "ATTACK"}
-            self.class_mapping = {int(key): value for key, value in class_mapping.items()}
-            self.model_version = self.metadata.get("version", "legacy-binary")
-            self.model_name = self.metadata.get("name", "ThreatTransformer")
+            metadata = _load_json(metadata_path)
+            if metadata.get("metadata_schema_version"):
+                metadata = validate_model_metadata(metadata, artifact_root=metadata_path.parent, verify_files=True)
+                if metadata.get("registry_status") != "active":
+                    raise GovernanceError("Model metadata is not marked active by the registry")
+                if metadata.get("model_type") != "transformer":
+                    raise GovernanceError("Only a promoted transformer artifact can be loaded for runtime inference")
+                if file_checksum(model_path) != metadata["artifact_checksums"]["model"]:
+                    raise GovernanceError("Configured model artifact checksum does not match metadata")
+                if file_checksum(scaler_path) != metadata["artifact_checksums"]["scaler"]:
+                    raise GovernanceError("Configured scaler artifact checksum does not match metadata")
+                self.metadata = metadata
+                self.feature_names = list(metadata["feature_names"])
+                self.class_mapping = {int(key): value for key, value in metadata["class_mapping"].items()}
+                self.model_version = metadata["model_version"]
+                self.model_name = metadata.get("model_type", "ThreatTransformer")
+                self.sequence_length = int(metadata["sequence_length"])
+                self.lifecycle_state = "active_trained"
+            else:
+                # Existing loose binary metadata remains supported, but is visible as compatibility mode.
+                self.metadata = validate_model_metadata(metadata, allow_legacy=True)
+                self.legacy_compatibility = True
+                self.feature_names = list(metadata.get("feature_list") or LEGACY_FEATURES)
+                class_mapping = metadata.get("class_mapping") or {"0": "BENIGN", "1": "ATTACK"}
+                self.class_mapping = {int(key): value for key, value in class_mapping.items()}
+                self.model_version = metadata.get("version", "legacy-binary")
+                self.model_name = metadata.get("name", "ThreatTransformer")
+                self.sequence_length = int(metadata.get("sequence_length", 10))
+                self.lifecycle_state = "legacy_compatibility"
 
-            if not model_path.exists() or not self.scaler:
-                self.error = "Model or scaler artifact missing; heuristic fallback is active."
+            if not model_path.exists() or not scaler_path.exists():
+                self._set_fallback("Model or scaler artifact missing; heuristic fallback is active.")
                 return
-
+            self.scaler = joblib.load(scaler_path)
             state_dict = torch.load(model_path, map_location="cpu")
-            num_classes = _infer_num_classes(state_dict)
-            input_dim = len(self.feature_names) or 78
-            self.model = ThreatTransformer(input_dim, 128, 8, 3, num_classes=num_classes)
+            architecture = self.metadata.get("architecture", {})
+            self.model = ThreatTransformer(
+                len(self.feature_names) or 78,
+                int(architecture.get("d_model", 128)),
+                int(architecture.get("nhead", 8)),
+                int(architecture.get("nlayers", 3)),
+                num_classes=_infer_num_classes(state_dict),
+            )
             self.model.load_state_dict(state_dict)
             self.model.eval()
         except Exception as exc:
-            self.model = None
-            self.scaler = None
-            self.error = f"Model artifacts are incompatible; heuristic fallback is active: {exc}"
+            self._set_fallback(f"Model artifacts are incompatible or ungoverned; heuristic fallback is active: {exc}")
 
     @property
     def available(self) -> bool:
@@ -137,20 +135,48 @@ class ModelDetector:
     def status(self) -> Dict[str, Any]:
         return {
             "available": self.available,
+            "state": self.lifecycle_state,
             "model_name": self.model_name,
             "model_version": self.model_version,
             "model_file_checksum": self.checksum,
             "feature_count": len(self.feature_names),
             "class_mapping": self.class_mapping,
+            "model_mode": "binary" if len(self.class_mapping) == 2 else "multiclass",
+            "metadata_schema_version": self.metadata.get("metadata_schema_version"),
+            "registry_status": self.metadata.get("registry_status"),
+            "dataset_identifier": self.metadata.get("dataset_identifier"),
+            "split_strategy": (self.metadata.get("split") or {}).get("strategy"),
+            "sequence_length": self.sequence_length,
+            "legacy_compatibility": self.legacy_compatibility,
+            "validation_metrics": self.metadata.get("validation_metrics", {}),
+            "test_metrics": self.metadata.get("test_metrics", {}),
+            "known_limitations": self.metadata.get("known_limitations", []),
             "fallback_reason": self.error,
+            "drift": self.last_drift,
         }
+
+    def evaluate_recent_drift(self, feature_rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        baseline = self.metadata.get("drift_baseline")
+        if not self.available or not baseline:
+            self.last_drift = {
+                "status": "degraded",
+                "model_version": self.model_version,
+                "sample_window": len(feature_rows),
+                "reason": "An active governed model with a drift baseline is required.",
+            }
+            return self.last_drift
+        self.last_drift = evaluate_drift(
+            baseline,
+            pd.DataFrame(feature_rows),
+            self.model_version,
+        )
+        return self.last_drift
 
     def _fallback(self, features: Dict[str, float], elapsed_ms: float) -> DetectorResult:
         outbound_bytes = features.get("totlen_fwd_pkts", 0.0)
         packets = features.get("tot_fwd_pkts", 0.0) + features.get("tot_bwd_pkts", 0.0)
         duration = features.get("flow_duration", 0.0)
-        score = 0.0
-        score += min(outbound_bytes / 50000.0, 1.0) * 0.45
+        score = min(outbound_bytes / 50000.0, 1.0) * 0.45
         score += min(packets / 250.0, 1.0) * 0.35
         score += min(duration / 120000000.0, 1.0) * 0.2
         label = "ATTACK" if score >= 0.55 else "BENIGN"
@@ -170,7 +196,7 @@ class ModelDetector:
                 "Compare this flow with recent connections from the same source.",
             ],
             latency_ms=elapsed_ms,
-            metadata={"fallback_reason": self.error},
+            metadata={"fallback_reason": self.error, "model_state": self.lifecycle_state},
         )
 
     def _feature_explanations(self, features: Dict[str, float]) -> List[Dict[str, Any]]:
@@ -188,28 +214,27 @@ class ModelDetector:
         started = time.perf_counter()
         if not self.available:
             return self._fallback(features, (time.perf_counter() - started) * 1000)
-
         input_df = pd.DataFrame([features])
-        for col in self.feature_names:
-            if col not in input_df.columns:
-                input_df[col] = 0.0
-        input_df = input_df[self.feature_names]
-
+        for column in self.feature_names:
+            if column not in input_df.columns:
+                input_df[column] = 0.0
         try:
-            scaled_features = self.scaler.transform(input_df)
-            sequence = np.array([scaled_features[0]] * 10)
-            sequence_tensor = torch.tensor(np.array([sequence]), dtype=torch.float32)
+            scaled_features = self.scaler.transform(input_df[self.feature_names])
+            sequence = np.repeat(scaled_features[0][None, :], self.sequence_length, axis=0)
             with torch.no_grad():
-                output = self.model(sequence_tensor)
-                probabilities_tensor = torch.softmax(output, dim=1)[0]
-                confidence_tensor, predicted_tensor = torch.max(probabilities_tensor, 0)
-            predicted_index = int(predicted_tensor.item())
-            label = self.class_mapping.get(predicted_index, str(predicted_index))
+                output = self.model(torch.tensor(np.array([sequence]), dtype=torch.float32))
+                probability_values = torch.softmax(output, dim=1)[0].tolist()
             probabilities = {
                 self.class_mapping.get(index, str(index)): float(value)
-                for index, value in enumerate(probabilities_tensor.tolist())
+                for index, value in enumerate(probability_values)
             }
-            confidence = float(confidence_tensor.item())
+            selected_threshold = (self.metadata.get("threshold_selection") or {}).get("selected_threshold")
+            if len(probability_values) == 2 and isinstance(selected_threshold, (int, float)):
+                predicted_index = 1 if probability_values[1] >= float(selected_threshold) else 0
+            else:
+                predicted_index = int(np.argmax(probability_values))
+            label = self.class_mapping.get(predicted_index, str(predicted_index))
+            confidence = float(probability_values[predicted_index])
             return DetectorResult(
                 source="ml_model",
                 classification=label,
@@ -225,6 +250,7 @@ class ModelDetector:
                     "Inspect high-contributing flow features before escalation.",
                 ],
                 latency_ms=(time.perf_counter() - started) * 1000,
+                metadata={"model_state": self.lifecycle_state},
             )
         except Exception as exc:
             self.error = f"Inference failed; heuristic fallback returned instead: {exc}"

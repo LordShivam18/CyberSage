@@ -27,6 +27,7 @@ import {
     updateIncident,
 } from './apiService';
 import AlertsTable from './components/AlertsTable';
+import ModelMonitoring from './components/ModelMonitoring';
 import PredictionForm from './components/PredictionForm';
 import './Dashboard.css';
 
@@ -332,18 +333,7 @@ function EventsView({ events, selectedEvent, setSelectedEvent }) {
 function ModelView({ modelStatus }) {
     return (
         <div className="view-grid">
-            <section className="panel">
-                <SectionHeading title="Model Status" icon={Brain} />
-                <div className="detail-grid">
-                    <span>Transformer</span><strong>{modelStatus.model?.available ? 'available' : 'fallback active'}</strong>
-                    <span>Version</span><strong>{fmt(modelStatus.model?.model_version)}</strong>
-                    <span>Features</span><strong>{fmt(modelStatus.model?.feature_count)}</strong>
-                    <span>Anomaly</span><strong>{modelStatus.anomaly?.available ? 'available' : 'fallback active'}</strong>
-                    <span>Rules loaded</span><strong>{fmt(modelStatus.rules?.loaded)}</strong>
-                    <span>Drift</span><strong>baseline pending</strong>
-                </div>
-                {modelStatus.model?.fallback_reason && <div className="state-panel">{modelStatus.model.fallback_reason}</div>}
-            </section>
+            <ModelMonitoring modelStatus={modelStatus} />
             <section className="panel wide">
                 <PredictionForm />
             </section>

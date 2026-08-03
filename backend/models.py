@@ -204,14 +204,21 @@ class ModelVersion(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False, index=True)
+    task = Column(String(128), nullable=False, default="network_detection", index=True)
     version = Column(String(255), nullable=False)
     model_type = Column(String(128), nullable=False)
+    status = Column(String(32), nullable=False, default="candidate", index=True)
     checksum = Column(String(128), nullable=True)
+    dataset_identifier = Column(String(255), nullable=True)
     feature_list = Column(JSONType, nullable=False, default=list)
     class_mapping = Column(JSONType, nullable=False, default=dict)
     metrics = Column(JSONType, nullable=False, default=dict)
     metadata_json = Column(JSONType, nullable=False, default=dict)
+    validation_result = Column(JSONType, nullable=False, default=dict)
+    rejection_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+    activated_at = Column(DateTime, nullable=True)
 
 
 class AuditEvent(Base):

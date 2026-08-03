@@ -28,7 +28,9 @@ from .config import settings
 from .database import SessionLocal, get_db
 from .inference import model_detector, run_prediction
 from .migrations.runner import current_revision
-from .models import Alert, AuditEvent, Detection, Incident, NormalizedEvent
+from .model_governance import GovernanceError
+from .model_registry import active_model, archive_model, list_models, model_version_to_public, promote_model, validate_registered_model
+from .models import Alert, AuditEvent, Detection, Incident, ModelVersion, NormalizedEvent
 from .pipeline import process_payload
 from .realtime import manager
 from .rules_engine import rule_engine
@@ -36,6 +38,7 @@ from .schemas import (
     AlertResponse,
     AlertUpdateRequest,
     IncidentUpdateRequest,
+    ModelValidationRequest,
     NetworkFlow,
     TelemetryIngestRequest,
     ThreatIntelLookupRequest,
@@ -70,6 +73,30 @@ def _dump_model(model):
     if hasattr(model, "model_dump"):
         return model.model_dump()
     return model.dict()
+
+
+def _recent_model_feature_rows(db: Session, limit: int = 200):
+    rows = db.query(NormalizedEvent).order_by(NormalizedEvent.timestamp.desc()).limit(limit).all()
+    feature_rows = []
+    for row in rows:
+        values = dict(row.normalized or {})
+        values.update(row.raw_event or {})
+        feature_rows.append(values)
+    return feature_rows
+
+
+def _model_governance_status(db: Session):
+    drift = model_detector.evaluate_recent_drift(_recent_model_feature_rows(db))
+    active = active_model(db)
+    return {
+        "active_model": model_version_to_public(active) if active else None,
+        "drift": drift,
+    }
+
+
+def _governance_http_error(db: Session, exc: GovernanceError):
+    db.rollback()
+    raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/health")
@@ -366,6 +393,7 @@ def metrics(db: Session = Depends(get_db)):
         "ml_model": sum(1 for detection in detections if (detection.confidence or 0) > 0),
         "anomaly": sum(1 for detection in detections if (detection.anomaly_score or 0) >= 0.6),
     }
+    governance = _model_governance_status(db)
     return {
         "active_incidents": active_incidents,
         "total_alerts": total_alerts,
@@ -387,18 +415,96 @@ def metrics(db: Session = Depends(get_db)):
             "rules": rule_engine.status(),
             "prediction_distribution": top_attack_classes,
             "inference_latency_ms_latest": db.query(func.avg(Detection.latency_ms)).scalar() or 0.0,
-            "drift": "placeholder: no production baseline has been established",
+            "drift": governance["drift"],
+            "governance": governance,
         },
     }
 
 
 @app.get("/api/v1/model/status")
-def model_status():
+def model_status(db: Session = Depends(get_db)):
+    governance = _model_governance_status(db)
     return {
         "model": model_detector.status(),
         "anomaly": anomaly_detector.status(),
         "rules": rule_engine.status(),
+        "governance": governance,
     }
+
+
+@app.get("/api/v1/models", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_AUDITOR))])
+def list_model_versions(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    task: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    return list_models(db, limit=limit, offset=offset, task=task)
+
+
+@app.get("/api/v1/models/active", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_AUDITOR))])
+def get_active_model(task: str = "network_detection", db: Session = Depends(get_db)):
+    row = active_model(db, task=task)
+    return {"item": model_version_to_public(row) if row else None}
+
+
+@app.get("/api/v1/models/{version}", dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_AUDITOR))])
+def get_model_version(version: str, db: Session = Depends(get_db)):
+    row = db.query(ModelVersion).filter(ModelVersion.version == version).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Model version not found")
+    return model_version_to_public(row)
+
+
+@app.post("/api/v1/models/{version}/validate")
+def validate_model_version(
+    version: str,
+    request: Optional[ModelValidationRequest] = None,
+    db: Session = Depends(get_db),
+    user=Depends(require_roles(ROLE_ADMIN)),
+):
+    try:
+        row = validate_registered_model(
+            db,
+            version,
+            quality_gates=request.quality_gates if request else None,
+            actor=user.username,
+        )
+        db.commit()
+        db.refresh(row)
+        return model_version_to_public(row)
+    except GovernanceError as exc:
+        _governance_http_error(db, exc)
+
+
+@app.post("/api/v1/models/{version}/promote")
+def promote_model_version(
+    version: str,
+    db: Session = Depends(get_db),
+    user=Depends(require_roles(ROLE_ADMIN)),
+):
+    try:
+        row = promote_model(db, version, actor=user.username)
+        db.commit()
+        db.refresh(row)
+        return model_version_to_public(row)
+    except GovernanceError as exc:
+        _governance_http_error(db, exc)
+
+
+@app.post("/api/v1/models/{version}/archive")
+def archive_model_version(
+    version: str,
+    db: Session = Depends(get_db),
+    user=Depends(require_roles(ROLE_ADMIN)),
+):
+    try:
+        row = archive_model(db, version, actor=user.username)
+        db.commit()
+        db.refresh(row)
+        return model_version_to_public(row)
+    except GovernanceError as exc:
+        _governance_http_error(db, exc)
 
 
 @app.post(

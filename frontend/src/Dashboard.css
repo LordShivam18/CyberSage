@@ -229,6 +229,10 @@
   font-style: normal;
 }
 
+.model-table-wrap {
+  margin-top: 14px;
+}
+
 .timeline-strip {
   display: grid;
   grid-template-columns: repeat(18, minmax(10px, 1fr));

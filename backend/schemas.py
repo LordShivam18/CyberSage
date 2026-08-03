@@ -52,3 +52,7 @@ class IncidentUpdateRequest(BaseModel):
 class ThreatIntelLookupRequest(BaseModel):
     indicator: str
     indicator_type: str = "ip"
+
+
+class ModelValidationRequest(BaseModel):
+    quality_gates: Optional[dict] = None

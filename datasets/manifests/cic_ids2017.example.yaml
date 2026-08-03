@@ -1,0 +1,38 @@
+# Example only: point files at an authorized local export; never commit source data.
+schema_version: cybersage.dataset-manifest.v1
+dataset_id: cic-ids2017-authorized-local-export
+files:
+  - ../../data/cic_ids2017/*.csv
+label_column: Label
+timestamp_column: Timestamp
+group_column: Source IP
+capture_day_column: Capture Day
+sequence_group_column: Source IP
+feature_columns: []
+exclude_columns:
+  - Source IP
+  - Destination IP
+  - Source Port
+  - Destination Port
+  - Timestamp
+label_taxonomy:
+  BENIGN: BENIGN
+  FTP-PATATOR: BRUTE_FORCE
+  SSH-PATATOR: BRUTE_FORCE
+  DOS HULK: DOS_DDOS
+  DOS GOLDENEYE: DOS_DDOS
+  DOS SLOWLORIS: DOS_DDOS
+  DOS SLOWHTTPTEST: DOS_DDOS
+  DDOS: DOS_DDOS
+  PORTSCAN: RECONNAISSANCE
+  BOT: BOTNET_C2
+  WEB ATTACK - BRUTE FORCE: WEB_ATTACK
+  WEB ATTACK - XSS: WEB_ATTACK
+  WEB ATTACK - SQL INJECTION: WEB_ATTACK
+  INFILTRATION: INFILTRATION
+benign_labels:
+  - BENIGN
+unknown_label_policy: other_attack
+task_mode: multiclass
+licence_notes: Verify the source licence and local authorization before training.
+source_notes: Example mapping for a local CIC-style CSV export; inspect actual columns and choose a sequence group with repeated ordered flows before training.

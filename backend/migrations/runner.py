@@ -4,10 +4,10 @@ from sqlalchemy import inspect, text
 
 from ..database import Base, engine
 from .. import models  # noqa: F401 - registers SQLAlchemy models
-from .versions import platform_001
+from .versions import model_governance_002, platform_001
 
 
-MIGRATIONS = [platform_001]
+MIGRATIONS = [platform_001, model_governance_002]
 
 
 def _ensure_migration_table(connection):

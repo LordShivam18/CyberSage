@@ -43,7 +43,10 @@ backend/
   main.py                       FastAPI app and compatibility endpoints
   worker.py                     Dedicated Kafka ingestion/detection worker
   telemetry.py                  Normalized event schema and parsers
-  inference.py                  Transformer loader and fallback prediction
+  inference.py                  Governed Transformer loader and explicit fallback prediction
+  model_governance.py           Dataset manifests, leakage controls, metrics, drift contracts
+  model_benchmark.py            Reproducible baseline and Transformer benchmark runner
+  model_registry.py             Candidate validation, promotion, archive lifecycle
   anomaly.py                    Isolation Forest loader and fallback scoring
   rules_engine.py               JSON rule validation and matching
   pipeline.py                   End-to-end detection pipeline
@@ -75,11 +78,35 @@ The pipeline creates one normalized event and one hybrid detection per event ID.
 - `threat_intel`: uses local indicators and cache by default. External providers are disabled unless explicitly configured and are mocked or disabled in tests.
 - `risk`: stores separate components for ML confidence, anomaly score, rule severity, threat-intel confidence, asset criticality, and repeat occurrence count.
 
-## Model Limitations
+## Model Governance And Limitations
 
-The original Transformer artifacts are not required for the application to start. When `results/model/transformer_model.pth` or `results/scaler.gz` is missing, model status reports a fallback state. The fallback is deterministic and useful for demos, but it is not a trained security model.
+The original binary Transformer artifacts remain compatible with the runtime in explicit `legacy_compatibility` state. When artifacts are missing, invalid, ungoverned, or not marked active, model status reports `degraded_fallback`; the deterministic fallback supports the demo but is not a trained security model.
 
-The training script now splits data before fitting the scaler and builds train/test sequences separately to reduce leakage. For serious evaluation, prefer scenario, capture-day, host, flow, or time-window splits.
+New training is manifest-driven. A manifest records the local source files, label taxonomy, feature exclusions, and group/time columns. Split code prevents sequence groups from crossing train, validation, and test partitions, fits preprocessing on train rows only, and builds sequences independently inside each partition. `random_dev_only` is labelled as unsuitable for quality claims and cannot be promoted.
+
+No dataset, PCAP, trained artifact, benchmark output, or credential belongs in this repository. [`datasets/manifests/cic_ids2017.example.yaml`](datasets/manifests/cic_ids2017.example.yaml) is a contract example only.
+
+### Benchmark And Promotion Flow
+
+Run an authorized local benchmark into an ignored directory:
+
+```powershell
+.\.venv\Scripts\python.exe -m backend.model_benchmark --manifest datasets\manifests\cic_ids2017.example.yaml --output results\benchmarks --split-strategy group
+```
+
+The runner records dataset-manifest and training-config checksums, feature order, class mapping, split counts, baseline results, Transformer results, calibration signals, and a train-feature drift baseline. It does not activate a model.
+
+Register, validate, and explicitly promote a Transformer artifact only after reviewing its held-out metrics and limitations:
+
+```powershell
+.\.venv\Scripts\python.exe -m backend.cli register-model results\benchmarks\<run>\artifacts\transformer.metadata.json
+.\.venv\Scripts\python.exe -m backend.cli validate-model <model-version>
+.\.venv\Scripts\python.exe -m backend.cli promote-model <model-version>
+```
+
+Promotion verifies artifact checksums again, records audit events, archives the prior active model for the same task, and marks the selected artifact active. The active artifact must then be configured through `MODEL_PATH`, `SCALER_PATH`, and `MODEL_METADATA_PATH` for a runtime process. The API never treats a candidate or invalid metadata as an active model.
+
+The built-in development gates require held-out macro F1 of at least `0.50`, macro false-positive rate at most `0.20`, and average held-out inference latency at most `1000 ms`; a review can add minimum recall per class. These are operational guardrails, not a claim that the model is suitable for a particular environment.
 
 ## Security And Privacy
 
@@ -111,6 +138,9 @@ Key variables:
 - `CORS_ORIGINS`
 - `THREAT_INTEL_EXTERNAL_ENABLED`
 - `THREAT_INTEL_CACHE_TTL_SECONDS`
+- `MODEL_PATH`
+- `SCALER_PATH`
+- `MODEL_METADATA_PATH`
 
 ## Docker Startup
 
@@ -175,12 +205,13 @@ python -m backend.cli migrate
 
 Current revision:
 
-- `001_platform_schema`
+- `002_model_governance`
 
 Upgrade behavior:
 
 - Creates platform tables for users, normalized events, detections, alerts, incidents, incident-alert links, analyst feedback, threat-intel cache, model versions, audit events, dead-letter events, and schema migrations.
 - Expands the legacy `alerts` table without dropping existing records.
+- Extends `model_versions` with task, lifecycle state, dataset identifier, validation results, rejection reason, activation, and update fields. Existing rows become archived rather than silently active.
 
 Downgrade behavior:
 
@@ -210,6 +241,12 @@ Versioned APIs:
 - `PATCH /api/v1/incidents/{incident_id}`
 - `GET /api/v1/metrics`
 - `GET /api/v1/model/status`
+- `GET /api/v1/models` (administrator or read-only auditor)
+- `GET /api/v1/models/active` (administrator or read-only auditor)
+- `GET /api/v1/models/{version}` (administrator or read-only auditor)
+- `POST /api/v1/models/{version}/validate` (administrator)
+- `POST /api/v1/models/{version}/promote` (administrator)
+- `POST /api/v1/models/{version}/archive` (administrator)
 - `POST /api/v1/threat-intel/lookup`
 - `GET /api/v1/audit-events`
 - `WS /api/v1/ws/alerts`

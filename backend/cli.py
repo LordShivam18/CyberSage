@@ -7,6 +7,7 @@ from .auth import ALL_ROLES, ROLE_ANALYST, create_user
 from .config import settings
 from .database import SessionLocal
 from .migrations.runner import current_revision, run_migrations
+from .model_registry import archive_model, model_version_to_public, promote_model, register_model, validate_registered_model
 from .pipeline import process_payload
 
 
@@ -59,6 +60,71 @@ def process_jsonl(args):
         db.close()
 
 
+def _quality_gates(value):
+    if not value:
+        return None
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise ValueError("--quality-gates must be a JSON object")
+    return parsed
+
+
+def register_trained_model(args):
+    run_migrations()
+    db = SessionLocal()
+    try:
+        row = register_model(db, args.metadata, actor="cli")
+        db.commit()
+        print(json.dumps(model_version_to_public(row), indent=2, sort_keys=True, default=str))
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def validate_trained_model(args):
+    run_migrations()
+    db = SessionLocal()
+    try:
+        row = validate_registered_model(db, args.version, _quality_gates(args.quality_gates), actor="cli")
+        db.commit()
+        print(json.dumps(model_version_to_public(row), indent=2, sort_keys=True, default=str))
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def promote_trained_model(args):
+    run_migrations()
+    db = SessionLocal()
+    try:
+        row = promote_model(db, args.version, actor="cli")
+        db.commit()
+        print(json.dumps(model_version_to_public(row), indent=2, sort_keys=True, default=str))
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def archive_trained_model(args):
+    run_migrations()
+    db = SessionLocal()
+    try:
+        row = archive_model(db, args.version, actor="cli")
+        db.commit()
+        print(json.dumps(model_version_to_public(row), indent=2, sort_keys=True, default=str))
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="AI-assisted NDR platform utilities")
     subcommands = parser.add_subparsers(required=True)
@@ -79,6 +145,23 @@ def build_parser():
     jsonl_parser.add_argument("path")
     jsonl_parser.add_argument("--source-hint", choices=["synthetic", "zeek", "suricata"])
     jsonl_parser.set_defaults(func=process_jsonl)
+
+    register_parser = subcommands.add_parser("register-model", help="Register a checksum-verified benchmark artifact")
+    register_parser.add_argument("metadata", help="Path to a versioned artifact metadata JSON file")
+    register_parser.set_defaults(func=register_trained_model)
+
+    validate_parser = subcommands.add_parser("validate-model", help="Evaluate registry quality gates for a candidate")
+    validate_parser.add_argument("version")
+    validate_parser.add_argument("--quality-gates", help="Optional JSON object overriding documented development gates")
+    validate_parser.set_defaults(func=validate_trained_model)
+
+    promote_parser = subcommands.add_parser("promote-model", help="Promote a validated model after checksum verification")
+    promote_parser.add_argument("version")
+    promote_parser.set_defaults(func=promote_trained_model)
+
+    archive_parser = subcommands.add_parser("archive-model", help="Archive a registered model version")
+    archive_parser.add_argument("version")
+    archive_parser.set_defaults(func=archive_trained_model)
 
     return parser
 

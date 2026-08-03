@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import backend.main as main_module
 from backend.auth import (
     ROLE_ANALYST,
+    ROLE_ADMIN,
     ROLE_AUDITOR,
     create_access_token,
     decode_access_token,
@@ -18,7 +19,7 @@ from backend.auth import (
 )
 from backend.database import Base, get_db
 from backend.migrations.runner import run_migrations
-from backend.models import Alert, Incident, ThreatIntelCache
+from backend.models import Alert, Incident, ModelVersion, ThreatIntelCache
 from backend.pipeline import process_payload
 
 
@@ -276,6 +277,63 @@ def test_model_unavailable_predict_response_is_not_silent(monkeypatch):
             )
         assert response.json()["degraded"] is True
         assert response.json()["warning"] == "test missing model"
+    finally:
+        main_module.app.dependency_overrides.clear()
+
+
+def test_model_registry_api_permissions_and_sanitized_details(monkeypatch):
+    object.__setattr__(main_module.settings, "auto_migrate", False)
+    SessionTesting = make_session()
+    db = SessionTesting()
+    admin = create_user(db, "registry-admin", "correct-horse-battery", ROLE_ADMIN)
+    auditor = create_user(db, "registry-auditor", "correct-horse-battery", ROLE_AUDITOR)
+    analyst = create_user(db, "registry-analyst", "correct-horse-battery", ROLE_ANALYST)
+    db.add(
+        ModelVersion(
+            name="network_detection",
+            task="network_detection",
+            version="test-model-v1",
+            model_type="transformer",
+            status="candidate",
+            checksum="a" * 64,
+            dataset_identifier="temporary-fixture",
+            feature_list=["bytes"],
+            class_mapping={"0": "BENIGN", "1": "ATTACK"},
+            metrics={},
+            metadata_json={"_artifact_root": "/private", "artifact_paths": {"model": "private.pth"}},
+        )
+    )
+    db.commit()
+    tokens = {
+        "admin": create_access_token(admin),
+        "auditor": create_access_token(auditor),
+        "analyst": create_access_token(analyst),
+    }
+    db.close()
+
+    def override_get_db():
+        session = SessionTesting()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    main_module.app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestClient(main_module.app) as client:
+            assert client.get("/api/v1/models", headers={"Authorization": f"Bearer {tokens['analyst']}"}).status_code == 403
+            listing = client.get("/api/v1/models", headers={"Authorization": f"Bearer {tokens['auditor']}"})
+            assert listing.status_code == 200
+            assert listing.json()["items"][0]["version"] == "test-model-v1"
+
+            detail = client.get("/api/v1/models/test-model-v1", headers={"Authorization": f"Bearer {tokens['auditor']}"})
+            assert detail.status_code == 200
+            assert "artifact_paths" not in detail.json()["metadata"]
+
+            denied = client.post("/api/v1/models/test-model-v1/promote", headers={"Authorization": f"Bearer {tokens['analyst']}"})
+            assert denied.status_code == 403
+            rejected = client.post("/api/v1/models/test-model-v1/promote", headers={"Authorization": f"Bearer {tokens['admin']}"})
+            assert rejected.status_code == 422
     finally:
         main_module.app.dependency_overrides.clear()
 
