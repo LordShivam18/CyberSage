@@ -126,30 +126,39 @@ class TestSecurityControlChecks:
         findings = SecurityServicesCheck().evaluate(result)
         assert any(f.status == FindingStatus.FAIL for f in findings)
 
-    def test_bitlocker_finding_id_stability(self):
+    import pytest
+    @pytest.mark.parametrize("mount_point, expected_id", [
+        ("C:", "SC-006:c"),
+        ("C:\\", "SC-006:c"),
+        ("/", "SC-006:volume"),
+        ("", "SC-006:volume"),
+        (None, "SC-006:volume"),
+    ])
+    def test_bitlocker_finding_id_stability(self, mount_point, expected_id):
         from cybersage_portable.checks.security_control_checks import BitLockerCheck
-        volumes = [
-            {"MountPoint": "C:", "ProtectionStatus": "Off"},
-            {"MountPoint": "C:\\", "ProtectionStatus": "Off"},
-            {"MountPoint": "/", "ProtectionStatus": "Off"},
-            {"MountPoint": "", "ProtectionStatus": "Off"},
-            {"MountPoint": None, "ProtectionStatus": "Off"}
-        ]
-        result = make_collector_result("security_controls", {"bitlocker": volumes})
-        findings = BitLockerCheck().evaluate(result)
-        assert len(findings) == 5
-        finding_ids = [f.finding_id for f in findings]
         
-        # finding IDs must be stable and stripped of backslashes
-        assert finding_ids[0] == "SC-006:c"
-        assert finding_ids[1] == "SC-006:c"
-        assert finding_ids[2] == "SC-006:volume"
-        assert finding_ids[3] == "SC-006:volume"
-        assert finding_ids[4] == "SC-006:unknown"
+        result = make_collector_result("security_controls", {
+            "bitlocker": [{"MountPoint": mount_point, "ProtectionStatus": "Off"}]
+        })
         
-        # Repeated evaluation produces same IDs
+        findings1 = BitLockerCheck().evaluate(result)
+        assert len(findings1) == 1
+        assert findings1[0].finding_id == expected_id
+        
         findings2 = BitLockerCheck().evaluate(result)
-        assert [f.finding_id for f in findings2] == finding_ids
+        assert findings2[0].finding_id == expected_id
+
+    def test_bitlocker_finding_id_normalization_equality(self):
+        from cybersage_portable.checks.security_control_checks import BitLockerCheck
+        
+        res1 = make_collector_result("security_controls", {"bitlocker": [{"MountPoint": "C:", "ProtectionStatus": "Off"}]})
+        f1 = BitLockerCheck().evaluate(res1)
+        
+        res2 = make_collector_result("security_controls", {"bitlocker": [{"MountPoint": "C:\\", "ProtectionStatus": "Off"}]})
+        f2 = BitLockerCheck().evaluate(res2)
+        
+        assert f1[0].finding_id == f2[0].finding_id
+        assert f1[0].finding_id == "SC-006:c"
 
 
 class TestProcessChecks:

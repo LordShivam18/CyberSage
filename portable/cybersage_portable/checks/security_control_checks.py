@@ -286,23 +286,25 @@ class BitLockerCheck(SecurityCheck):
         for vol in volumes:
             if not isinstance(vol, dict):
                 continue
-            mount = str(vol.get("MountPoint") or "unknown")
+            raw_mount = vol.get("MountPoint")
             protection = str(vol.get("ProtectionStatus") or "Unknown")
-            mount_key = mount.strip("/\\:").lower() or "volume"
+            mount_text = str(raw_mount).strip() if raw_mount is not None else ""
+            mount_display = mount_text or "unknown"
+            mount_key = mount_text.strip("/\\:").lower() or "volume"
             finding_id = f"{self.check_id}:{mount_key}"
             is_protected = protection.lower() in {"on", "1", "protected"}
             findings.append(self._make_finding(
                 finding_id=finding_id,
-                title=f"BitLocker — {mount}",
+                title=f"BitLocker — {mount_display}",
                 category=Category.SECURITY_CONTROLS,
                 severity=Severity.MEDIUM if not is_protected else Severity.INFORMATIONAL,
                 confidence=Confidence.HIGH,
                 status=FindingStatus.FAIL if not is_protected else FindingStatus.PASS,
-                evidence={"mount_point": mount, "protection_status": protection, "volume_status": vol.get("VolumeStatus")},
+                evidence={"mount_point": mount_display, "protection_status": protection, "volume_status": vol.get("VolumeStatus")},
                 explanation=(
-                    f"Volume {mount}: BitLocker protection status = {protection}."
+                    f"Volume {mount_display}: BitLocker protection status = {protection}."
                     if not is_protected else
-                    f"Volume {mount}: BitLocker protection is active."
+                    f"Volume {mount_display}: BitLocker protection is active."
                 ),
                 remediation="Enable BitLocker protection on unprotected volumes containing sensitive data." if not is_protected else "No action required.",
                 collected_at=collected_at,
