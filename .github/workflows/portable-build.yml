@@ -24,10 +24,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           
@@ -80,7 +80,7 @@ jobs:
           $hash.Hash | Out-File -FilePath CyberSage-Portable.zip.sha256 -Encoding ASCII
           
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: CyberSage-Portable-Windows
           path: |

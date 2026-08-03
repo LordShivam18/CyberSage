@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from pydantic import ValidationError
 
-from .auth import ROLE_ADMIN, ROLE_ANALYST, authenticate_user
+from .auth import ROLE_ADMIN, ROLE_ANALYST, get_current_user, require_roles, audit_event
 from .database import get_db
 from .models import AssessmentFinding, AssessmentRun, User, Alert, utcnow
 from .schemas import AssessmentImportRequest
@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/v1/assessments", tags=["assessments"])
 async def import_assessment(
     raw_request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(authenticate_user),
+    current_user: User = Depends(require_roles(ROLE_ADMIN, ROLE_ANALYST)),
 ):
     # 1. Raw HTTP request-size enforcement before parsing
     content_length = raw_request.headers.get("content-length")
@@ -166,6 +166,16 @@ async def import_assessment(
                     alerts_created += 1
 
         db.commit()
+
+        audit_event(
+            db=db,
+            action="assessment_imported",
+            target_type="assessment",
+            target_id=assessment_id,
+            details={"findings_imported": len(request.report.findings), "alerts_created": alerts_created},
+            user=current_user,
+        )
+
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Assessment conflict: database constraint violation")
@@ -184,7 +194,7 @@ async def import_assessment(
     }
 
 @router.get("/")
-def list_assessments(db: Session = Depends(get_db), current_user: User = Depends(authenticate_user)):
+def list_assessments(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     runs = db.query(AssessmentRun).order_by(AssessmentRun.imported_at.desc()).limit(100).all()
     return [{
         "id": run.id,
@@ -197,7 +207,7 @@ def list_assessments(db: Session = Depends(get_db), current_user: User = Depends
     } for run in runs]
 
 @router.get("/{assessment_id}")
-def get_assessment(assessment_id: str, db: Session = Depends(get_db), current_user: User = Depends(authenticate_user)):
+def get_assessment(assessment_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     run = db.query(AssessmentRun).filter(AssessmentRun.assessment_id == assessment_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Assessment not found")
