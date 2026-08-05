@@ -92,14 +92,11 @@ def upgrade(engine, _base=None) -> None:
             ("ix_assessment_runs_posture_score", "posture_score", False),
             ("ix_assessment_runs_imported_by", "imported_by", False),
         ]:
-            try:
-                unique_sql = "UNIQUE " if unique else ""
-                conn.execute(text(
-                    f"CREATE {unique_sql}INDEX {_quote(idx_name)} "
-                    f"ON {_quote('assessment_runs')} ({_quote(col_name)})"
-                ))
-            except Exception:
-                conn.rollback()
+            unique_sql = "UNIQUE " if unique else ""
+            conn.execute(text(
+                f"CREATE {unique_sql}INDEX IF NOT EXISTS {_quote(idx_name)} "
+                f"ON {_quote('assessment_runs')} ({_quote(col_name)})"
+            ))
 
         # ----------------------------------------------------------------
         # assessment_findings
@@ -140,13 +137,11 @@ def upgrade(engine, _base=None) -> None:
             ("ix_assessment_findings_severity", "severity"),
             ("ix_assessment_findings_category", "category"),
         ]:
-            try:
-                conn.execute(text(
-                    f"CREATE INDEX {_quote(idx_name)} "
-                    f"ON {_quote('assessment_findings')} ({_quote(col_name)})"
-                ))
-            except Exception:
-                conn.rollback()
+            conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS {_quote(idx_name)} "
+                f"ON {_quote('assessment_findings')} ({_quote(col_name)})"
+            ))
+
 
 
 def downgrade(engine) -> None:

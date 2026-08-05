@@ -106,5 +106,37 @@ def test_runtime_release_gate_schema_assertions():
     assert "002_model_governance" in workflow_text
     assert "003_portable_assessment" in workflow_text
     assert "uq_assessment_run_finding" in workflow_text
+    assert "ux_assessment_runs_assessment_id" in workflow_text
     assert "'jsonb'::regtype" in workflow_text
+
+
+def test_migration_003_static_assertions():
+    migration_path = ROOT / "backend" / "migrations" / "versions" / "portable_assessment_003.py"
+    content = migration_path.read_text(encoding="utf-8")
+    assert "conn.rollback()" not in content
+    assert "except Exception:" not in content
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS" in content
+    assert "CREATE INDEX IF NOT EXISTS" in content
+    assert '("ux_assessment_runs_assessment_id", "assessment_id", True)' in content
+
+
+def test_migration_003_execution_idempotency():
+    from sqlalchemy import create_engine, inspect
+    from backend.database import Base
+    from backend.migrations.versions import portable_assessment_003
+
+    engine = create_engine("sqlite:///:memory:")
+    # Pre-existing assessment table created via SQLAlchemy metadata
+    Base.metadata.create_all(bind=engine)
+
+    # First upgrade execution
+    portable_assessment_003.upgrade(engine)
+
+    insp = inspect(engine)
+    indexes = [idx["name"] for idx in insp.get_indexes("assessment_runs")]
+    assert "ux_assessment_runs_assessment_id" in indexes
+
+    # Re-running migration 003 must be idempotent and succeed without exception
+    portable_assessment_003.upgrade(engine)
+
 
