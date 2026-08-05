@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "cybersage-portable"
@@ -48,7 +48,6 @@ include = ["cybersage_portable*"]
 [tool.setuptools.package-data]
 cybersage_portable = [
     "py.typed",
-    "../schemas/*.json",
 ]
 
 [tool.pytest.ini_options]

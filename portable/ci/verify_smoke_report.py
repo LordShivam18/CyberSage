@@ -2,8 +2,7 @@ import json
 import sys
 import os
 
-from shared.report_contract import verify_checksum
-from portable.cybersage_portable.schemas.validator import validate_report
+from shared.report_contract import verify_checksum, validate_report
 
 def check_secrets(obj):
     if isinstance(obj, dict):

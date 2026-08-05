@@ -30,3 +30,11 @@ def test_workflow_packaging_arguments():
     assert "cybersage_portable/__main__.py" not in content, "Obsolete direct PyInstaller target must be absent"
     assert "--privacy-mode minimal" in content, "Workflow must use --privacy-mode minimal"
     assert "--output smoke-output" in content, "Workflow must treat --output as a directory named smoke-output"
+    assert "portable/requirements.txt" not in content, "Workflow must not reference portable/requirements.txt"
+
+def test_pyproject_build_backend_is_correct():
+    pyproject_path = os.path.join(os.path.dirname(__file__), "..", "pyproject.toml")
+    with open(pyproject_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "setuptools.build_meta" in content, "build-backend must be setuptools.build_meta"
+    assert "setuptools.backends.legacy" not in content, "setuptools.backends.legacy is invalid and must be absent"
