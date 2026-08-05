@@ -93,3 +93,18 @@ def test_backend_dockerfile_contains_shared():
     api_assessments = (ROOT / "backend" / "api_assessments.py").read_text()
     assert "from shared.report_contract import" in api_assessments
     assert not (ROOT / "backend" / "report_contract.py").exists()
+
+
+def test_runtime_release_gate_schema_assertions():
+    workflow_text = (ROOT / ".github" / "workflows" / "runtime-release-gate.yml").read_text()
+    assert "('detections', 'score_components')" in workflow_text
+    assert "('detections', 'risk_components')" not in workflow_text
+    assert "('alerts', 'risk_components')" in workflow_text
+    assert "'assessment_runs'" in workflow_text
+    assert "'assessment_findings'" in workflow_text
+    assert "001_platform_schema" in workflow_text
+    assert "002_model_governance" in workflow_text
+    assert "003_portable_assessment" in workflow_text
+    assert "uq_assessment_run_finding" in workflow_text
+    assert "'jsonb'::regtype" in workflow_text
+

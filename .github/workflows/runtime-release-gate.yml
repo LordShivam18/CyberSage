@@ -263,7 +263,7 @@ jobs:
             FOREACH required_table IN ARRAY ARRAY[
               'users', 'normalized_events', 'detections', 'alerts', 'incidents', 'incident_alerts',
               'analyst_feedback', 'threat_intel_cache', 'model_versions', 'audit_events',
-              'dead_letter_events', 'schema_migrations'
+              'dead_letter_events', 'schema_migrations', 'assessment_runs', 'assessment_findings'
             ] LOOP
               IF NOT EXISTS (
                 SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = required_table
@@ -275,7 +275,12 @@ jobs:
             FOREACH required_table IN ARRAY ARRAY[
               'ux_alerts_alert_key', 'ix_alerts_status', 'ix_alerts_severity',
               'ix_alerts_classification', 'ix_alerts_source_ip', 'ix_alerts_destination_ip',
-              'ix_alerts_risk_score'
+              'ix_alerts_risk_score', 'ux_assessment_runs_assessment_id',
+              'ix_assessment_runs_imported_at', 'ix_assessment_runs_posture_score',
+              'ix_assessment_runs_imported_by', 'ix_assessment_findings_run_id',
+              'ix_assessment_findings_check_id', 'ix_assessment_findings_status',
+              'ix_assessment_findings_severity', 'ix_assessment_findings_category',
+              'ix_model_versions_task_status'
             ] LOOP
               IF NOT EXISTS (
                 SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = required_table
@@ -287,9 +292,14 @@ jobs:
             FOR required_table, required_column IN
               SELECT * FROM (VALUES
                 ('normalized_events', 'raw_event'), ('normalized_events', 'normalized'),
-                ('detections', 'triggered_rules'), ('detections', 'risk_components'),
+                ('detections', 'triggered_rules'), ('detections', 'score_components'),
                 ('alerts', 'triggered_rules'), ('alerts', 'risk_components'),
-                ('incidents', 'mitre_techniques'), ('dead_letter_events', 'payload')
+                ('incidents', 'mitre_techniques'), ('dead_letter_events', 'payload'),
+                ('assessment_runs', 'posture_score_components'),
+                ('assessment_runs', 'full_report'),
+                ('assessment_findings', 'evidence'),
+                ('assessment_findings', 'references_json'),
+                ('model_versions', 'validation_result')
               ) AS expected_json(table_name, column_name)
             LOOP
               IF NOT EXISTS (
@@ -321,11 +331,22 @@ jobs:
               END IF;
             END LOOP;
 
+            FOREACH required_column IN ARRAY ARRAY['task', 'status', 'updated_at', 'activated_at']
+            LOOP
+              IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'model_versions'
+                  AND column_name = required_column
+              ) THEN
+                RAISE EXCEPTION 'model_versions.% column is missing', required_column;
+              END IF;
+            END LOOP;
+
             FOR required_table, referenced_table IN
               SELECT * FROM (VALUES
                 ('detections', 'normalized_events'), ('alerts', 'detections'),
                 ('incident_alerts', 'incidents'), ('incident_alerts', 'alerts'),
-                ('analyst_feedback', 'alerts')
+                ('analyst_feedback', 'alerts'), ('assessment_findings', 'assessment_runs')
               ) AS expected_fk(table_name, referenced_table)
             LOOP
               IF NOT EXISTS (
@@ -351,6 +372,15 @@ jobs:
             ) THEN
               RAISE EXCEPTION 'Missing incident-alert uniqueness constraint';
             END IF;
+
+            IF NOT EXISTS (
+              SELECT 1 FROM information_schema.table_constraints
+              WHERE table_schema = 'public' AND table_name = 'assessment_findings'
+                AND constraint_name = 'uq_assessment_run_finding' AND constraint_type = 'UNIQUE'
+            ) THEN
+              RAISE EXCEPTION 'Missing unique constraint uq_assessment_run_finding on assessment_findings';
+            END IF;
+
             IF NOT EXISTS (
               SELECT 1 FROM information_schema.columns
               WHERE table_schema = 'public' AND table_name = 'schema_migrations'
@@ -358,8 +388,17 @@ jobs:
             ) THEN
               RAISE EXCEPTION 'Missing migration timestamp default';
             END IF;
+
             IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE revision = '001_platform_schema') THEN
-              RAISE EXCEPTION 'Migration tracking entry is missing';
+              RAISE EXCEPTION 'Migration tracking entry 001_platform_schema is missing';
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE revision = '002_model_governance') THEN
+              RAISE EXCEPTION 'Migration tracking entry 002_model_governance is missing';
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE revision = '003_portable_assessment') THEN
+              RAISE EXCEPTION 'Migration tracking entry 003_portable_assessment is missing';
             END IF;
           END $$;
           SQL
@@ -495,7 +534,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          event_id="runtime-dead-letter-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker compose exec -T backend-api python /tmp/runtime_release_gate.py dead-letter --event-id "${event_id}"
           worker_container="$(docker compose ps -q detection-worker)"
           [[ "$(docker inspect --format '{{.State.Status}}' "${worker_container}")" == "running" ]]
