@@ -574,6 +574,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          event_id="runtime-dead-letter-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker compose exec -T backend-api python /tmp/runtime_release_gate.py dead-letter --event-id "${event_id}"
           worker_container="$(docker compose ps -q detection-worker)"
           [[ "$(docker inspect --format '{{.State.Status}}' "${worker_container}")" == "running" ]]

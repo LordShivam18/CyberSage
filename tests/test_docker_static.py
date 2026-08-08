@@ -263,6 +263,28 @@ def test_runtime_release_gate_script_assertions_and_unit_behavior(monkeypatch):
         asyncio.run(gate.assert_websocket_rejected({}))
 
 
+def test_dead_letter_step_self_contained_event_id():
+    workflow_text = (ROOT / ".github" / "workflows" / "runtime-release-gate.yml").read_text(encoding="utf-8")
+
+    start = workflow_text.index("- name: Validate dead-letter handling")
+    end = workflow_text.index("- name: Validate Kafka, PostgreSQL, and worker recovery", start)
+    dead_letter_section = workflow_text[start:end]
+
+    assert "set -euo pipefail" in dead_letter_section
+    assert 'event_id="runtime-dead-letter-' in dead_letter_section
+    assert "GITHUB_RUN_ID" in dead_letter_section
+    assert "GITHUB_RUN_ATTEMPT" in dead_letter_section
+    assert '--event-id "${event_id}"' in dead_letter_section
+    assert "runtime-kafka-" not in dead_letter_section
+    assert "detection-worker" in dead_letter_section
+    assert "running" in dead_letter_section
+
+    id_def = dead_letter_section.index('event_id="runtime-dead-letter-')
+    id_use = dead_letter_section.index('--event-id "${event_id}"')
+    assert id_def < id_use
+
+
+
 
 
 
