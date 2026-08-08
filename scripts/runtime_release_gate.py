@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict
 
 import httpx
 import websockets
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from kafka import KafkaConsumer, KafkaProducer
 from sqlalchemy import text
 
@@ -104,15 +105,6 @@ def websocket_connect_kwargs(headers: Dict[str, str]) -> Dict[str, Any]:
 
 
 async def assert_websocket_rejected(headers: Dict[str, str]) -> None:
-    expected_errors = tuple(
-        error
-        for error in (
-            getattr(websockets.exceptions, "InvalidStatus", None),
-            getattr(websockets.exceptions, "InvalidStatusCode", None),
-            getattr(websockets.exceptions, "ConnectionClosed", None),
-        )
-        if error is not None
-    )
     try:
         async with websockets.connect(
             "ws://127.0.0.1:8000/api/v1/ws/alerts",
@@ -120,11 +112,12 @@ async def assert_websocket_rejected(headers: Dict[str, str]) -> None:
             **websocket_connect_kwargs(headers),
         ) as websocket:
             await asyncio.wait_for(websocket.recv(), timeout=3)
-    except expected_errors:
+    except (InvalidHandshake, ConnectionClosed):
         return
     except asyncio.TimeoutError as exc:
         raise AssertionError("Rejected WebSocket connection remained open") from exc
     raise AssertionError("Unauthorized WebSocket connection was accepted")
+
 
 
 async def validate_websocket_notification(client: httpx.Client, analyst_token: str) -> int:

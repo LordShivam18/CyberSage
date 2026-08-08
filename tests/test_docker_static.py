@@ -191,6 +191,76 @@ def test_legacy_migration_idempotency_workflow_assertions():
     assert drop_db > second_run
 
 
+def test_runtime_release_gate_script_assertions_and_unit_behavior(monkeypatch):
+    import asyncio
+    import importlib.util
+    import inspect
+    from unittest.mock import AsyncMock, MagicMock
+    import pytest
+    from websockets.exceptions import ConnectionClosed, InvalidStatus, Close
+
+    script_path = ROOT / "scripts" / "runtime_release_gate.py"
+    content = script_path.read_text(encoding="utf-8")
+
+    # 1. Imports public exceptions from websockets.exceptions
+    assert "from websockets.exceptions import ConnectionClosed, InvalidHandshake" in content
+
+    # 2. Does not access websockets.exceptions as a top-level attribute
+    assert "websockets.exceptions." not in content
+
+    spec = importlib.util.spec_from_file_location("runtime_release_gate_mod", script_path)
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+
+    # 7. websocket_connect_kwargs supports both additional_headers and extra_headers
+    mock_connect_new = MagicMock()
+    mock_connect_new.__signature__ = inspect.Signature([
+        inspect.Parameter("additional_headers", inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ])
+    monkeypatch.setattr(gate.websockets, "connect", mock_connect_new)
+    assert gate.websocket_connect_kwargs({"a": "b"}) == {"additional_headers": {"a": "b"}}
+
+    mock_connect_old = MagicMock()
+    mock_connect_old.__signature__ = inspect.Signature([
+        inspect.Parameter("extra_headers", inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ])
+    monkeypatch.setattr(gate.websockets, "connect", mock_connect_old)
+    assert gate.websocket_connect_kwargs({"a": "b"}) == {"extra_headers": {"a": "b"}}
+
+    # 3. InvalidHandshake (e.g. InvalidStatus subclass) treated as successful rejection
+    mock_cm_handshake = MagicMock()
+    mock_cm_handshake.__aenter__ = AsyncMock(side_effect=InvalidStatus(MagicMock()))
+    mock_cm_handshake.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr(gate.websockets, "connect", MagicMock(return_value=mock_cm_handshake))
+    asyncio.run(gate.assert_websocket_rejected({}))
+
+    # 4. ConnectionClosed treated as successful rejection
+    mock_cm_closed = MagicMock()
+    mock_cm_closed.__aenter__ = AsyncMock(side_effect=ConnectionClosed(Close(1000, "normal"), None))
+    mock_cm_closed.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr(gate.websockets, "connect", MagicMock(return_value=mock_cm_closed))
+    asyncio.run(gate.assert_websocket_rejected({}))
+
+    # 5. asyncio.TimeoutError remains a failure
+    mock_cm_timeout = MagicMock()
+    mock_cm_timeout.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError())
+    mock_cm_timeout.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr(gate.websockets, "connect", MagicMock(return_value=mock_cm_timeout))
+    with pytest.raises(AssertionError, match="Rejected WebSocket connection remained open"):
+        asyncio.run(gate.assert_websocket_rejected({}))
+
+    # 6. Accepted connection raises AssertionError
+    mock_ws = MagicMock()
+    mock_ws.recv = AsyncMock(return_value="hello")
+    mock_cm_open = MagicMock()
+    mock_cm_open.__aenter__ = AsyncMock(return_value=mock_ws)
+    mock_cm_open.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr(gate.websockets, "connect", MagicMock(return_value=mock_cm_open))
+    with pytest.raises(AssertionError, match="Unauthorized WebSocket connection was accepted"):
+        asyncio.run(gate.assert_websocket_rejected({}))
+
+
+
 
 
 
