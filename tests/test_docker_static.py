@@ -115,8 +115,9 @@ def test_migration_003_static_assertions():
     content = migration_path.read_text(encoding="utf-8")
     assert "conn.rollback()" not in content
     assert "except Exception:" not in content
-    assert "CREATE UNIQUE INDEX IF NOT EXISTS" in content
     assert "CREATE INDEX IF NOT EXISTS" in content
+    assert 'unique_sql = "UNIQUE " if unique else ""' in content
+    assert 'f"CREATE {unique_sql}INDEX IF NOT EXISTS' in content
     assert '("ux_assessment_runs_assessment_id", "assessment_id", True)' in content
 
 
@@ -133,10 +134,33 @@ def test_migration_003_execution_idempotency():
     portable_assessment_003.upgrade(engine)
 
     insp = inspect(engine)
-    indexes = [idx["name"] for idx in insp.get_indexes("assessment_runs")]
+    indexes = {
+        idx["name"]: idx
+        for idx in insp.get_indexes("assessment_runs")
+    }
+
     assert "ux_assessment_runs_assessment_id" in indexes
+    assessment_index = indexes["ux_assessment_runs_assessment_id"]
+    assert assessment_index["column_names"] == ["assessment_id"]
+    assert assessment_index.get("unique") in (True, 1)
+
+    # Verify assessment_findings indexes behaviorally
+    findings_indexes = {
+        idx["name"]: idx
+        for idx in insp.get_indexes("assessment_findings")
+    }
+    required_findings_indexes = [
+        "ix_assessment_findings_run_id",
+        "ix_assessment_findings_check_id",
+        "ix_assessment_findings_status",
+        "ix_assessment_findings_severity",
+        "ix_assessment_findings_category",
+    ]
+    for idx_name in required_findings_indexes:
+        assert idx_name in findings_indexes
 
     # Re-running migration 003 must be idempotent and succeed without exception
     portable_assessment_003.upgrade(engine)
+
 
 
