@@ -472,8 +472,48 @@ jobs:
           docker compose run --rm --no-deps \
             -e "DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${LEGACY_DB}" \
             migrate
-          docker compose exec -T db psql --set=ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d "${LEGACY_DB}" \
-            -c "SELECT CASE WHEN COUNT(*) = 1 THEN 1 ELSE 1 / 0 END FROM schema_migrations WHERE revision = '001_platform_schema'" > /dev/null
+          docker compose exec -T db psql --set=ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d "${LEGACY_DB}" <<'SQL'
+          DO $$
+          BEGIN
+            IF (SELECT COUNT(*) FROM schema_migrations WHERE revision = '001_platform_schema') <> 1 THEN
+              RAISE EXCEPTION '001_platform_schema migration tracking is not idempotent';
+            END IF;
+
+            IF (SELECT COUNT(*) FROM schema_migrations WHERE revision = '002_model_governance') <> 1 THEN
+              RAISE EXCEPTION '002_model_governance migration tracking is not idempotent';
+            END IF;
+
+            IF (SELECT COUNT(*) FROM schema_migrations WHERE revision = '003_portable_assessment') <> 1 THEN
+              RAISE EXCEPTION '003_portable_assessment migration tracking is not idempotent';
+            END IF;
+
+            IF (SELECT COUNT(*) FROM alerts) <> 2 THEN
+              RAISE EXCEPTION 'Legacy rows count changed on migration rerun';
+            END IF;
+
+            IF NOT EXISTS (
+              SELECT 1 FROM alerts
+              WHERE id = 101 AND prediction = 'LEGACY_ALPHA' AND probability = 0.91
+                AND details = '{"legacy":"alpha"}'
+            ) OR NOT EXISTS (
+              SELECT 1 FROM alerts
+              WHERE id = 102 AND prediction = 'LEGACY_BETA' AND probability = 0.42
+                AND details = '{"legacy":"beta"}'
+            ) THEN
+              RAISE EXCEPTION 'Legacy identifying values changed on migration rerun';
+            END IF;
+
+            IF EXISTS (
+              SELECT 1 FROM alerts
+              WHERE status <> 'new' OR severity <> 'high' OR priority <> 'medium'
+                 OR classification <> prediction OR confidence <> probability
+                 OR detection_source <> 'legacy_model' OR risk_score <> probability * 100
+                 OR first_seen IS NULL OR last_seen IS NULL OR updated_at IS NULL
+            ) THEN
+              RAISE EXCEPTION 'Legacy backfill values were corrupted on migration rerun';
+            END IF;
+          END $$;
+          SQL
           docker compose exec -T db psql --set=ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d postgres \
             -c "DROP DATABASE \"${LEGACY_DB}\" WITH (FORCE)"
 

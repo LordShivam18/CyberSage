@@ -163,4 +163,16 @@ def test_migration_003_execution_idempotency():
     portable_assessment_003.upgrade(engine)
 
 
+def test_legacy_migration_idempotency_workflow_assertions():
+    workflow_text = (ROOT / ".github" / "workflows" / "runtime-release-gate.yml").read_text(encoding="utf-8")
+    assert "1 / 0" not in workflow_text
+    assert "'001_platform_schema migration tracking is not idempotent'" in workflow_text
+    assert "'002_model_governance migration tracking is not idempotent'" in workflow_text
+    assert "'003_portable_assessment migration tracking is not idempotent'" in workflow_text
+    assert "RAISE EXCEPTION '001_platform_schema migration tracking is not idempotent'" in workflow_text
+    assert "docker compose run --rm --no-deps" in workflow_text
+    assert 'DROP DATABASE "${LEGACY_DB}" WITH (FORCE)' in workflow_text
+
+
+
 
