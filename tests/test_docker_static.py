@@ -165,13 +165,31 @@ def test_migration_003_execution_idempotency():
 
 def test_legacy_migration_idempotency_workflow_assertions():
     workflow_text = (ROOT / ".github" / "workflows" / "runtime-release-gate.yml").read_text(encoding="utf-8")
-    assert "1 / 0" not in workflow_text
-    assert "'001_platform_schema migration tracking is not idempotent'" in workflow_text
-    assert "'002_model_governance migration tracking is not idempotent'" in workflow_text
-    assert "'003_portable_assessment migration tracking is not idempotent'" in workflow_text
-    assert "RAISE EXCEPTION '001_platform_schema migration tracking is not idempotent'" in workflow_text
-    assert "docker compose run --rm --no-deps" in workflow_text
-    assert 'DROP DATABASE "${LEGACY_DB}" WITH (FORCE)' in workflow_text
+
+    start = workflow_text.index(
+        "- name: Validate legacy migration against temporary PostgreSQL database"
+    )
+    end = workflow_text.index(
+        "- name: Create temporary runtime users through the CLI",
+        start,
+    )
+    legacy_section = workflow_text[start:end]
+
+    assert "1 / 0" not in legacy_section
+    assert "RAISE EXCEPTION '001_platform_schema migration tracking is not idempotent'" in legacy_section
+    assert "RAISE EXCEPTION '002_model_governance migration tracking is not idempotent'" in legacy_section
+    assert "RAISE EXCEPTION '003_portable_assessment migration tracking is not idempotent'" in legacy_section
+
+    assert legacy_section.count("docker compose run --rm --no-deps") >= 2
+
+    assert "DROP DATABASE" in legacy_section
+    assert "${LEGACY_DB}" in legacy_section
+    assert "WITH (FORCE)" in legacy_section
+
+    second_run = legacy_section.rfind("docker compose run --rm --no-deps")
+    drop_db = legacy_section.rfind("DROP DATABASE")
+    assert drop_db > second_run
+
 
 
 
