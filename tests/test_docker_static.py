@@ -197,7 +197,7 @@ def test_runtime_release_gate_script_assertions_and_unit_behavior(monkeypatch):
     import inspect
     from unittest.mock import AsyncMock, MagicMock
     import pytest
-    from websockets.exceptions import ConnectionClosed, InvalidStatus, Close
+    from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
     script_path = ROOT / "scripts" / "runtime_release_gate.py"
     content = script_path.read_text(encoding="utf-8")
@@ -227,16 +227,19 @@ def test_runtime_release_gate_script_assertions_and_unit_behavior(monkeypatch):
     monkeypatch.setattr(gate.websockets, "connect", mock_connect_old)
     assert gate.websocket_connect_kwargs({"a": "b"}) == {"extra_headers": {"a": "b"}}
 
-    # 3. InvalidHandshake (e.g. InvalidStatus subclass) treated as successful rejection
+    # 3. InvalidHandshake subclass treated as successful rejection
+    class _TestInvalidHandshake(InvalidHandshake):
+        pass
+
     mock_cm_handshake = MagicMock()
-    mock_cm_handshake.__aenter__ = AsyncMock(side_effect=InvalidStatus(MagicMock()))
+    mock_cm_handshake.__aenter__ = AsyncMock(side_effect=_TestInvalidHandshake("test rejection"))
     mock_cm_handshake.__aexit__ = AsyncMock(return_value=None)
     monkeypatch.setattr(gate.websockets, "connect", MagicMock(return_value=mock_cm_handshake))
     asyncio.run(gate.assert_websocket_rejected({}))
 
     # 4. ConnectionClosed treated as successful rejection
     mock_cm_closed = MagicMock()
-    mock_cm_closed.__aenter__ = AsyncMock(side_effect=ConnectionClosed(Close(1000, "normal"), None))
+    mock_cm_closed.__aenter__ = AsyncMock(side_effect=ConnectionClosed(None, None))
     mock_cm_closed.__aexit__ = AsyncMock(return_value=None)
     monkeypatch.setattr(gate.websockets, "connect", MagicMock(return_value=mock_cm_closed))
     asyncio.run(gate.assert_websocket_rejected({}))
