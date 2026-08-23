@@ -16,6 +16,31 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
+
+
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+def _validate_url_scheme(url: str) -> None:
+    """Reject URLs whose scheme is not in the permitted set.
+
+    Only ``http`` and ``https`` are allowed.  This prevents misuse of
+    ``urllib.request.urlopen`` to open ``file:``, ``ftp:``, or other
+    dangerous schemes.
+
+    Raises
+    -----
+    ValueError
+        If the scheme is missing, empty, or not in ``_ALLOWED_SCHEMES``.
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in _ALLOWED_SCHEMES:
+        raise ValueError(
+            f"URL scheme {scheme!r} is not permitted; "
+            f"allowed schemes: {', '.join(sorted(_ALLOWED_SCHEMES))}"
+        )
 
 
 def import_to_server(
@@ -70,6 +95,8 @@ def import_to_server(
 
     url = f"{base_url.rstrip('/')}/api/v1/assessments/import"
 
+    _validate_url_scheme(url)
+
     req = urllib.request.Request(
         url,
         data=payload,
@@ -82,7 +109,7 @@ def import_to_server(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 — scheme validated by _validate_url_scheme
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")[:2048]
