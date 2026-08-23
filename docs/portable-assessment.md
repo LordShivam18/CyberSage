@@ -1,4 +1,4 @@
-# CyberSage Portable Security Assessment v1
+# CyberSage Portable Security Assessment v1.1
 
 The CyberSage Portable Scanner is a standalone, offline, Windows-first executable that can securely assess device configuration and security posture without needing permanent installation.
 
@@ -7,20 +7,25 @@ The CyberSage Portable Scanner is a standalone, offline, Windows-first executabl
 * **Offline Posture Assessment**: Checks critical areas (OS info, security controls, accounts, processes, persistence mechanisms, network configurations, browser extensions, and certificates).
 * **Safe Telemetry Collection**: Strictly read-only checks, utilizing native `Get-CimInstance`, Registry reading, and structured output. Never runs `shell=True`.
 * **Explainable Findings**: Translates low-level misconfigurations into human-readable warnings with clear remediation steps.
-* **Integrity Checked**: Produces a canonical JSON payload verified by a SHA-256 checksum on import. Note: A checksum detects modification, but it does not prove who produced the report or executable. Reports and portable builds are unsigned/self-asserted until a future code-signing and key-management design exists.
+* **Integrity Checked**: Produces a canonical JSON payload verified by a SHA-256 checksum on import. Windows release archives also include a checksum, CycloneDX SBOM, and release manifest. A checksum detects modification but does not establish publisher identity by itself.
 * **Differential Analysis**: Supports comparing two different assessment scans to easily highlight configuration drift.
 
 ## Build and Distribution
 
-The scanner is built in GitHub Actions via PyInstaller in **one-directory mode** (`--onedir`). The resulting directory is compressed into a `.zip` file for distribution to analyst flash drives or offline environments.
+The scanner is built in GitHub Actions via PyInstaller in **one-directory mode** (`--onedir`). The resulting directory is compressed into a versioned `.zip` file with its checksum, SBOM, and release manifest. The repository-root `VERSION` file is authoritative.
 
-```bash
-# Build locally
-cd portable
-pip install -r requirements.txt
-pip install pyinstaller
-pyinstaller --noconfirm --onedir --name CyberSage-Portable cybersage_portable/__main__.py
+```powershell
+# Build locally from the repository root
+python -m venv .portable-venv
+.\.portable-venv\Scripts\python.exe -m pip install -e ".\portable[build,win]"
+Push-Location portable
+..\.portable-venv\Scripts\pyinstaller.exe --noconfirm --onedir --name CyberSage-Portable --add-data "..\VERSION;." launcher.py
+Pop-Location
 ```
+
+For a release, retain the archive with its `.sha256`, `.sbom.cdx.json`, and
+`.release-manifest.json` files. See `docs/release-security.md` for provenance
+validation and signing-status guidance.
 
 ## Usage
 

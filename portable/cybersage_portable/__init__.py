@@ -19,7 +19,24 @@ Safe-use rules enforced by design
 * No kernel driver is installed.
 """
 
-__version__ = "1.0.0"
+def _release_version() -> str:
+    """Load the single repository version in source and PyInstaller builds."""
+    import sys
+    from pathlib import Path
+
+    candidates = []
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "VERSION")
+    candidates.append(Path(__file__).resolve().parents[2] / "VERSION")
+    for candidate in candidates:
+        if candidate.is_file():
+            value = candidate.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+    raise RuntimeError("CyberSage VERSION file is required to determine the scanner version")
+
+
+__version__ = _release_version()
 __schema_version__ = "assessment.v1"
 __score_algorithm__ = "posture_score_v1"
 

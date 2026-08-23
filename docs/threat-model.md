@@ -33,6 +33,28 @@
 - Migration-controlled schema changes.
 - Training split before preprocessing fit.
 
+## Release and Distribution Threats
+
+Additional v1.1 assets are release archives, dependency declarations and the
+frontend lockfile, CycloneDX SBOMs, release manifests, archive checksums, and
+Windows signing credentials when signing is explicitly requested. GitHub-hosted
+build runners form a trust boundary between source control, dependency
+registries, build tools, and distributed artifacts.
+
+| Threat | Current mitigation |
+| --- | --- |
+| A secret reaches source control or CI diagnostics | Gitleaks scans committed content, CI credentials are generated per run and masked, and failure diagnostics are sanitized. |
+| A dependency or workflow action changes unexpectedly | Direct Python and build dependencies are exact pins, the frontend uses its committed lockfile with `npm ci`, and third-party actions use immutable commit SHAs. |
+| A vulnerable dependency is released | `pip-audit --strict` and production `npm audit` run in the release gate; Bandit and zizmor provide static checks. |
+| An archive is modified or lacks provenance | The release includes an archive SHA-256 checksum, CycloneDX SBOM, and validated manifest with source revision, build identity, environment, and dependency-input hashes. |
+| An unsigned executable is presented as trusted | The release manifest records `unsigned` unless a manually required signing run successfully produces and validates an Authenticode signature. |
+
 ## Residual Risk
 
-This is a local development and portfolio platform. It is not hardened for internet exposure without additional secrets management, TLS, centralized rate limiting, observability, backup strategy, and security review.
+CyberSage is a local development and portfolio platform, not a production
+internet service. It does not yet provide managed secrets, TLS termination,
+centralized rate limiting, backup and recovery, independently reproducible
+binaries, container image digest pinning, image vulnerability scanning, or a
+reviewed vulnerability-exception process. A checksum detects modification but
+does not establish publisher identity. Unsigned portable builds are not
+represented as code-signed software.

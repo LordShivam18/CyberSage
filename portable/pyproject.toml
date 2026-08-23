@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cybersage-portable"
-version = "1.0.0"
+dynamic = ["version"]
 description = "CyberSage Portable Security Assessment – Windows-first offline defensive scanner"
 readme = "README-portable.md"
 requires-python = ">=3.11"
@@ -29,14 +29,11 @@ dependencies = []
 
 [project.optional-dependencies]
 # Install on Windows for full functionality.
-win = ["pywin32>=306"]
+win = ["pywin32==312"]
 # Required for building the standalone portable executable.
-build = ["pyinstaller>=6.5"]
+build = ["pyinstaller==6.22.0"]
 # Required for running tests.
-dev = [
-    "pytest>=8.1",
-    "pytest-mock>=3.14",
-]
+dev = ["pytest==9.1.1"]
 
 [project.scripts]
 cybersage-portable = "cybersage_portable.__main__:main"
@@ -44,6 +41,9 @@ cybersage-portable = "cybersage_portable.__main__:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cybersage_portable*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "cybersage_portable.__version__"}
 
 [tool.setuptools.package-data]
 cybersage_portable = [

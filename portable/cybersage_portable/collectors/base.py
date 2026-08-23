@@ -24,7 +24,10 @@ from typing import Any
 
 from ..models import CollectorResult
 
-COLLECTOR_VERSION = "1.0.0"
+from .. import __version__
+
+
+COLLECTOR_VERSION = __version__
 
 
 class Collector(abc.ABC):

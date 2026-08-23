@@ -32,6 +32,7 @@ from .migrations.runner import current_revision
 from .model_governance import GovernanceError
 from .model_registry import active_model, archive_model, list_models, model_version_to_public, promote_model, validate_registered_model
 from .models import Alert, AuditEvent, Detection, Incident, ModelVersion, NormalizedEvent
+from .release import release_version
 from .pipeline import process_payload
 from .realtime import manager
 from .rules_engine import rule_engine
@@ -55,7 +56,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version=release_version(), lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

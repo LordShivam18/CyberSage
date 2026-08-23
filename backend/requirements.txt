@@ -1,24 +1,24 @@
 # Core Data Science Libraries
-pandas
-numpy
-scikit-learn
-joblib
+pandas==2.3.1
+numpy==2.3.2
+scikit-learn==1.7.1
+joblib==1.5.1
 
 # PyTorch (CPU version)
-torch
+torch==2.8.0
 
 # Backend API Framework
-fastapi
-uvicorn[standard]
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
 
 # Real-time Data Streaming
-kafka-python
+kafka-python==2.2.15
 
 # Database Connector
-psycopg2-binary
-SQLAlchemy
+psycopg2-binary==2.9.10
+SQLAlchemy==2.0.42
 
 # Testing
-pytest
-httpx
-PyYAML
+pytest==9.1.1
+httpx==0.28.1
+PyYAML==6.0.2

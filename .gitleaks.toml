@@ -1,0 +1,4 @@
+title = "CyberSage secret scanning policy"
+
+[extend]
+useDefault = true

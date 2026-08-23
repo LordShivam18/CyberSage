@@ -1,0 +1,5 @@
+# Security tooling used by the CI release gates. Exact versions make tool behavior auditable.
+bandit[toml]==1.9.4
+cyclonedx-bom==7.3.1
+pip-audit==2.10.1
+zizmor==1.29.0

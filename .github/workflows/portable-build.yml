@@ -2,58 +2,122 @@ name: Build Portable Scanner
 
 on:
   workflow_dispatch:
+    inputs:
+      require_signing:
+        description: Require a configured Windows code-signing identity for this release build.
+        required: false
+        default: false
+        type: boolean
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
+      - "VERSION"
       - "portable/**"
       - "shared/**"
+      - "security/**"
+      - "scripts/release_metadata.py"
+      - "scripts/version_contract.py"
+      - ".bandit.yaml"
+      - ".gitleaks.toml"
       - ".github/workflows/portable-build.yml"
-      - "portable/pyproject.toml"
   pull_request:
     paths:
+      - "VERSION"
       - "portable/**"
       - "shared/**"
+      - "security/**"
+      - "scripts/release_metadata.py"
+      - "scripts/version_contract.py"
+      - ".bandit.yaml"
+      - ".gitleaks.toml"
       - ".github/workflows/portable-build.yml"
-      - "portable/pyproject.toml"
 
 permissions:
   contents: read
 
+concurrency:
+  group: portable-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-windows:
     runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONUTF8: "1"
+      CYBERSAGE_REQUIRE_WINDOWS_SIGNING: ${{ github.event_name == 'workflow_dispatch' && inputs.require_signing || 'false' }}
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-        
-      - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          python-version: '3.11'
-          
-      - name: Install dependencies
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan committed content for secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Validate authoritative version sources
+        run: python scripts/version_contract.py
+
+      - name: Install test and security tooling
         run: |
           $ErrorActionPreference = "Stop"
           python -m pip install --upgrade pip
           python -m pip install -e "./portable[dev,build,win]"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Run portable unit tests and contract tests
+          python -m pip install -r security/requirements.txt
+
+      - name: Run focused static security analysis
         run: |
+          $ErrorActionPreference = "Stop"
+          bandit -c .bandit.yaml -r portable shared -ll
+          zizmor .github/workflows
+
+      - name: Run portable unit and contract tests
+        run: |
+          $ErrorActionPreference = "Stop"
           $env:PYTHONPATH = "${{ github.workspace }}"
           python -m pytest portable/tests
-          
-      - name: Build with PyInstaller (One-Directory)
+
+      - name: Create clean release build environment
         run: |
+          $ErrorActionPreference = "Stop"
+          python -m venv .portable-release-venv
+          & .\.portable-release-venv\Scripts\python.exe -m pip install --upgrade pip
+          & .\.portable-release-venv\Scripts\python.exe -m pip install -e "./portable[build,win]"
+          & .\.portable-release-venv\Scripts\python.exe -m pip install "cyclonedx-bom==7.3.1" "pip-audit==2.10.1"
+          & .\.portable-release-venv\Scripts\pip-audit.exe --strict
+
+      - name: Build CycloneDX SBOM from release environment
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = (Get-Content VERSION -Raw).Trim()
+          New-Item -ItemType Directory -Force -Path portable/dist | Out-Null
+          & .\.portable-release-venv\Scripts\cyclonedx-py.exe environment --of JSON --output "portable/dist/CyberSage-Portable-$version.sbom.cdx.json"
+          & .\.portable-release-venv\Scripts\python.exe scripts/release_metadata.py validate-sbom --sbom "portable/dist/CyberSage-Portable-$version.sbom.cdx.json"
+
+      - name: Build with PyInstaller one-directory mode
+        run: |
+          $ErrorActionPreference = "Stop"
           $env:PYTHONPATH = "${{ github.workspace }}"
-          cd portable
-          pyinstaller --noconfirm --onedir --name CyberSage-Portable launcher.py
-          
+          Push-Location portable
+          & ..\.portable-release-venv\Scripts\pyinstaller.exe --noconfirm --onedir --name CyberSage-Portable --add-data "..\VERSION;." launcher.py
+          Pop-Location
+
       - name: Run smoke scan in minimal mode
         run: |
-          cd portable/dist/CyberSage-Portable
-          # Run without admin privileges, read-only, minimal privacy
-          ./CyberSage-Portable.exe scan --output smoke-output --privacy-mode minimal
-          
+          $ErrorActionPreference = "Stop"
+          Set-Location portable/dist/CyberSage-Portable
+          .\CyberSage-Portable.exe scan --output smoke-output --privacy-mode minimal
+
       - name: Verify report schema, checksum, and absence of secrets
         run: |
           $ErrorActionPreference = "Stop"
@@ -61,37 +125,90 @@ jobs:
           if (@($reports).Count -ne 1) {
               throw "Expected exactly one JSON report."
           }
-          
           $env:PYTHONPATH = "${{ github.workspace }}"
           python portable/ci/verify_smoke_report.py $reports[0].FullName
-          
-          if ($LASTEXITCODE -ne 0) {
-              exit $LASTEXITCODE
-          }
-          
-      - name: Cleanup temporary output
-        if: always()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Sign portable executable when explicitly required
+        env:
+          CYBERSAGE_WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.CYBERSAGE_WINDOWS_SIGNING_CERT_BASE64 }}
+          CYBERSAGE_WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.CYBERSAGE_WINDOWS_SIGNING_CERT_PASSWORD }}
+          CYBERSAGE_WINDOWS_SIGNING_IDENTITY: ${{ vars.CYBERSAGE_WINDOWS_SIGNING_IDENTITY }}
         run: |
           $ErrorActionPreference = "Stop"
-          if (Test-Path "portable/dist/CyberSage-Portable/smoke-output") {
-              Remove-Item -Recurse -Force "portable/dist/CyberSage-Portable/smoke-output"
+          $executable = "portable/dist/CyberSage-Portable/CyberSage-Portable.exe"
+          if ($env:CYBERSAGE_REQUIRE_WINDOWS_SIGNING -ne "true") {
+              "CYBERSAGE_SIGNING_STATUS=unsigned" >> $env:GITHUB_ENV
+              exit 0
           }
-          
-      - name: Create ZIP archive
+          if (-not $env:CYBERSAGE_WINDOWS_SIGNING_CERT_BASE64 -or -not $env:CYBERSAGE_WINDOWS_SIGNING_CERT_PASSWORD -or -not $env:CYBERSAGE_WINDOWS_SIGNING_IDENTITY) {
+              throw "Windows signing is required, but the certificate, password, or identity is not configured."
+          }
+          $signTool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+          if (-not $signTool) { throw "Windows signing is required, but signtool.exe is unavailable." }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "cybersage-release-signing.pfx"
+          try {
+              [System.IO.File]::WriteAllBytes($certificatePath, [System.Convert]::FromBase64String($env:CYBERSAGE_WINDOWS_SIGNING_CERT_BASE64))
+              & $signTool.Source sign /fd SHA256 /f $certificatePath /p $env:CYBERSAGE_WINDOWS_SIGNING_CERT_PASSWORD $executable
+              if ($LASTEXITCODE -ne 0) { throw "signtool.exe failed." }
+              $signature = Get-AuthenticodeSignature -FilePath $executable
+              if ($signature.Status -ne "Valid") { throw "Signed executable did not validate: $($signature.Status)" }
+          }
+          finally {
+              if (Test-Path $certificatePath) { Remove-Item -Force $certificatePath }
+          }
+          "CYBERSAGE_SIGNING_STATUS=signed" >> $env:GITHUB_ENV
+          "CYBERSAGE_SIGNING_IDENTITY=$env:CYBERSAGE_WINDOWS_SIGNING_IDENTITY" >> $env:GITHUB_ENV
+
+      - name: Create versioned release archive and checksum
         run: |
-          cd portable/dist
-          Compress-Archive -Path CyberSage-Portable -DestinationPath CyberSage-Portable.zip
-          
-      - name: Generate SHA-256 Checksum
+          $ErrorActionPreference = "Stop"
+          $version = (Get-Content VERSION -Raw).Trim()
+          $archive = "portable/dist/CyberSage-Portable-$version-windows.zip"
+          Compress-Archive -Path portable/dist/CyberSage-Portable -DestinationPath $archive
+          $hash = Get-FileHash -Path $archive -Algorithm SHA256
+          "$($hash.Hash.ToLowerInvariant()) *$([System.IO.Path]::GetFileName($archive))" | Out-File -FilePath "$archive.sha256" -Encoding ASCII
+          "CYBERSAGE_ARCHIVE=$archive" >> $env:GITHUB_ENV
+
+      - name: Create and validate release manifest
         run: |
-          cd portable/dist
-          $hash = Get-FileHash -Path CyberSage-Portable.zip -Algorithm SHA256
-          $hash.Hash | Out-File -FilePath CyberSage-Portable.zip.sha256 -Encoding ASCII
-          
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4.6.2
+          $ErrorActionPreference = "Stop"
+          $version = (Get-Content VERSION -Raw).Trim()
+          $sbom = "portable/dist/CyberSage-Portable-$version.sbom.cdx.json"
+          $manifest = "portable/dist/CyberSage-Portable-$version.release-manifest.json"
+          $arguments = @(
+            "scripts/release_metadata.py", "create",
+            "--version-file", "VERSION",
+            "--artifact", $env:CYBERSAGE_ARCHIVE,
+            "--sbom", $sbom,
+            "--output", $manifest,
+            "--component", "Portable Assessment",
+            "--build-identity", "github://$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/attempt/$env:GITHUB_RUN_ATTEMPT",
+            "--signing-status", $env:CYBERSAGE_SIGNING_STATUS,
+            "--repo-root", ".",
+            "--source-revision", $env:GITHUB_SHA
+          )
+          if ($env:CYBERSAGE_SIGNING_STATUS -eq "signed") {
+            $arguments += @("--signing-identity", $env:CYBERSAGE_SIGNING_IDENTITY)
+          }
+          & python @arguments
+          & python scripts/release_metadata.py validate --manifest $manifest --version-file VERSION --repo-root .
+
+      - name: Cleanup temporary scan and build environments
+        if: always()
+        run: |
+          $ErrorActionPreference = "Continue"
+          Remove-Item -Recurse -Force "portable/dist/CyberSage-Portable/smoke-output" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force .portable-release-venv -ErrorAction SilentlyContinue
+
+      - name: Upload portable release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: CyberSage-Portable-Windows
+          name: CyberSage-Portable-Windows-${{ github.sha }}
           path: |
-            portable/dist/CyberSage-Portable.zip
-            portable/dist/CyberSage-Portable.zip.sha256
+            ${{ env.CYBERSAGE_ARCHIVE }}
+            ${{ env.CYBERSAGE_ARCHIVE }}.sha256
+            portable/dist/CyberSage-Portable-*.sbom.cdx.json
+            portable/dist/CyberSage-Portable-*.release-manifest.json
+          if-no-files-found: error
+          retention-days: 14

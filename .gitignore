@@ -72,3 +72,4 @@ data/
 portable/dist/
 portable/build/
 portable/*.spec
+.portable-release-venv/

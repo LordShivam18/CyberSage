@@ -1,0 +1,6 @@
+exclude_dirs:
+  - tests
+  - portable/tests
+  - frontend
+skips:
+  - B101

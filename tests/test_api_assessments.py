@@ -114,7 +114,8 @@ def test_retained_workflow_uses_correct_artifact_action():
     with open(workflow_path, "r") as f:
         content = f.read()
     
-    assert "actions/upload-artifact@v4.6.2" in content
+    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in content
+    assert "actions/upload-artifact@v4.6.2" not in content
     assert "actions/upload-artifact@v3" not in content
     assert "actions/upload-artifact@v2" not in content
     assert "actions/upload-artifact@v1" not in content

@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 COPY backend /app/backend
 COPY shared /app/shared
 COPY README.md /app/README.md
+COPY VERSION /app/VERSION
 
 RUN python -c "from shared.report_contract import verify_checksum"
 
