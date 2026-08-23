@@ -129,7 +129,7 @@ jobs:
           & .\.portable-release-venv\Scripts\python.exe -m pip install --upgrade pip
           & .\.portable-release-venv\Scripts\python.exe -m pip install -e "./portable[build,win]"
           & .\.portable-release-venv\Scripts\python.exe -m pip install "cyclonedx-bom==7.3.1" "pip-audit==2.10.1"
-          & .\.portable-release-venv\Scripts\pip-audit.exe --strict --skip-editable
+          & .\.portable-release-venv\Scripts\pip-audit.exe -r portable/requirements-audit.txt --strict
 
       - name: Build CycloneDX SBOM from release environment
         run: |

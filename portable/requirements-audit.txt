@@ -1,0 +1,8 @@
+# Third-party dependencies for CyberSage Portable security audit.
+# Derived from portable/pyproject.toml [project.optional-dependencies].
+# Only third-party packages are listed — cybersage-portable itself is excluded.
+#
+# Runtime (Windows-only):
+pywin32==312
+# Build:
+pyinstaller==6.22.0
