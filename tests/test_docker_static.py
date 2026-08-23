@@ -91,7 +91,10 @@ def test_backend_dockerfile_contains_shared():
     assert "COPY shared /app/shared" in content
     assert "ENV API_BIND_HOST=127.0.0.1" in content
     assert "ENV API_PORT=8000" in content
-    assert "--host \"$API_BIND_HOST\"" in content
+    # Normalize escaped quotes for JSON CMD string representation
+    normalized = content.replace('\\"', '"')
+    assert '--host "$API_BIND_HOST"' in normalized
+    assert '--port "$API_PORT"' in normalized
     assert "0.0.0.0" not in content
     
     dockerignore_path = ROOT / "backend" / ".dockerignore"
