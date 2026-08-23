@@ -136,7 +136,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $version = (Get-Content VERSION -Raw).Trim()
           New-Item -ItemType Directory -Force -Path portable/dist | Out-Null
-          & .\.portable-release-venv\Scripts\cyclonedx-py.exe environment --of JSON --output "portable/dist/CyberSage-Portable-$version.sbom.cdx.json"
+          & .\.portable-release-venv\Scripts\cyclonedx-py.exe environment --of JSON --output-file "portable/dist/CyberSage-Portable-$version.sbom.cdx.json"
           & .\.portable-release-venv\Scripts\python.exe scripts/release_metadata.py validate-sbom --sbom "portable/dist/CyberSage-Portable-$version.sbom.cdx.json"
 
       - name: Build with PyInstaller one-directory mode
