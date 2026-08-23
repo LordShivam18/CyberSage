@@ -40,6 +40,18 @@ jobs:
           GITLEAKS_VERSION: "8.18.4"
           GITLEAKS_CONFIG: .gitleaks.toml
 
+      - name: Relocate SARIF report outside workspace
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          sarif="${GITHUB_WORKSPACE}/results.sarif"
+          if [[ -f "${sarif}" ]]; then
+            mkdir -p "${RUNNER_TEMP}/security-reports"
+            mv "${sarif}" "${RUNNER_TEMP}/security-reports/results.sarif"
+            echo "SARIF report relocated to ${RUNNER_TEMP}/security-reports/results.sarif"
+          fi
+
       - name: Generate temporary runtime credentials
         shell: bash
         run: |
