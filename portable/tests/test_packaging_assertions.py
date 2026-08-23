@@ -38,3 +38,26 @@ def test_pyproject_build_backend_is_correct():
         content = f.read()
     assert "setuptools.build_meta" in content, "build-backend must be setuptools.build_meta"
     assert "setuptools.backends.legacy" not in content, "setuptools.backends.legacy is invalid and must be absent"
+
+def test_version_file_exists_and_is_bundled():
+    """The root VERSION file must exist and the workflow must bundle it with PyInstaller."""
+    version_path = os.path.join(os.path.dirname(__file__), "..", "..", "VERSION")
+    assert os.path.isfile(version_path), "Root VERSION file must exist"
+    with open(version_path, "r", encoding="utf-8") as f:
+        version = f.read().strip()
+    assert version, "VERSION file must not be empty"
+
+    workflow_path = os.path.join(os.path.dirname(__file__), "..", "..", ".github", "workflows", "portable-build.yml")
+    with open(workflow_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "--add-data" in content and "VERSION" in content, "Workflow must bundle VERSION via --add-data"
+    assert "--contents-directory ." in content, "Workflow must use --contents-directory . so VERSION is at the executable level"
+
+def test_version_lookup_respects_frozen_bundle():
+    """_release_version() must look for VERSION next to the frozen executable."""
+    init_path = os.path.join(os.path.dirname(__file__), "..", "cybersage_portable", "__init__.py")
+    with open(init_path, "r", encoding="utf-8") as f:
+        source = f.read()
+    assert "frozen" in source and "getattr" in source, "_release_version must check sys.frozen for PyInstaller"
+    assert "sys.executable" in source, "_release_version must use sys.executable for frozen path"
+    assert "parents[2]" in source, "_release_version must have a source-tree fallback"

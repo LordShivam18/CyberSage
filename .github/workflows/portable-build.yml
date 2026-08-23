@@ -144,7 +144,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $env:PYTHONPATH = "${{ github.workspace }}"
           Push-Location portable
-          & ..\.portable-release-venv\Scripts\pyinstaller.exe --noconfirm --onedir --name CyberSage-Portable --add-data "..\VERSION;." launcher.py
+          & ..\.portable-release-venv\Scripts\pyinstaller.exe --noconfirm --onedir --name CyberSage-Portable --contents-directory . --add-data "..\VERSION;." launcher.py
           Pop-Location
 
       - name: Run smoke scan in minimal mode
