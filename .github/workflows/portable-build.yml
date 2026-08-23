@@ -55,12 +55,45 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Scan committed content for secrets
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+      # gitleaks-action v3 hard-codes a .tar.gz download URL on Windows. Gitleaks
+      # publishes Windows binaries as ZIP archives, so install the verified archive
+      # directly until the action supports the Windows release format. v8.30.1 is
+      # deliberately avoided because upstream reports both a Windows checksum defect
+      # and a secret-detection regression: https://github.com/gitleaks/gitleaks/issues/2164
+      # and https://github.com/gitleaks/gitleaks/issues/2170.
+      - name: Install verified Gitleaks and scan committed content for secrets
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_VERSION: "8.18.4"
           GITLEAKS_CONFIG: .gitleaks.toml
+          # SHA-256 from the official v8.18.4 release checksum manifest:
+          # https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_checksums.txt
+          GITLEAKS_WINDOWS_ASSET_SHA256: "9ba442ca7dda19885a2e569f43a127289feeb2b5fb0dfa251dafd277f4a0ba91"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = $env:GITLEAKS_VERSION
+          $asset = "gitleaks_${version}_windows_x64.zip"
+          $archivePath = Join-Path $env:RUNNER_TEMP $asset
+          $installPath = Join-Path $env:RUNNER_TEMP "gitleaks-$version"
+          $releaseUri = "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${asset}"
+          $configPath = Join-Path $env:GITHUB_WORKSPACE $env:GITLEAKS_CONFIG
+
+          Invoke-WebRequest -Uri $releaseUri -OutFile $archivePath
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:GITLEAKS_WINDOWS_ASSET_SHA256) {
+            throw "Gitleaks archive SHA-256 verification failed."
+          }
+
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $installPath
+          $executables = @(Get-ChildItem -LiteralPath $installPath -Filter gitleaks.exe -File -Recurse)
+          if ($executables.Count -ne 1) {
+            throw "Expected exactly one gitleaks.exe in the verified archive."
+          }
+
+          & $executables[0].FullName detect --source $env:GITHUB_WORKSPACE --config $configPath --redact --verbose --exit-code=2 --log-opts=--all
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0

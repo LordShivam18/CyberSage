@@ -103,12 +103,32 @@ def test_backend_dockerfile_contains_shared():
     assert not (ROOT / "backend" / "report_contract.py").exists()
 
 
-def test_release_workflows_pin_the_available_gitleaks_binary_and_config():
-    for workflow_name in ("portable-build.yml", "runtime-release-gate.yml"):
-        content = (ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
-        assert "gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e" in content
-        assert 'GITLEAKS_VERSION: "8.30.1"' in content
-        assert "GITLEAKS_CONFIG: .gitleaks.toml" in content
+def test_portable_workflow_uses_verified_windows_gitleaks_archive():
+    content = (ROOT / ".github" / "workflows" / "portable-build.yml").read_text(encoding="utf-8")
+
+    assert 'GITLEAKS_VERSION: "8.18.4"' in content
+    assert '$asset = "gitleaks_${version}_windows_x64.zip"' in content
+    assert "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${asset}" in content
+    assert (
+        'GITLEAKS_WINDOWS_ASSET_SHA256: "9ba442ca7dda19885a2e569f43a127289feeb2b5fb0dfa251dafd277f4a0ba91"'
+        in content
+    )
+    assert "Get-FileHash -Algorithm SHA256" in content
+    assert "Expand-Archive" in content
+    assert "gitleaks.exe" in content
+    assert "detect --source $env:GITHUB_WORKSPACE" in content
+    assert "--config $configPath" in content
+    assert "--exit-code=2" in content
+    assert "GITLEAKS_CONFIG: .gitleaks.toml" in content
+    assert "gitleaks/gitleaks-action@" not in content
+
+
+def test_runtime_release_workflow_keeps_immutable_gitleaks_action_and_known_good_version():
+    content = (ROOT / ".github" / "workflows" / "runtime-release-gate.yml").read_text(encoding="utf-8")
+
+    assert "gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e" in content
+    assert 'GITLEAKS_VERSION: "8.18.4"' in content
+    assert "GITLEAKS_CONFIG: .gitleaks.toml" in content
 
 
 def test_runtime_release_gate_schema_assertions():
@@ -298,8 +318,6 @@ def test_dead_letter_step_self_contained_event_id():
     id_def = dead_letter_section.index('event_id="runtime-dead-letter-')
     id_use = dead_letter_section.index('--event-id "${event_id}"')
     assert id_def < id_use
-
-
 
 
 
