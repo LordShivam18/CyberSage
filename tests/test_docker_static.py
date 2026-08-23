@@ -69,6 +69,10 @@ def test_docker_compose_static_configuration():
     assert "KAFKA_BOOTSTRAP_SERVERS=kafka:9092" in api_env
     assert "KAFKA_BOOTSTRAP_SERVERS=kafka:9092" in worker_env
     assert "JWT_SECRET=${JWT_SECRET:?set JWT_SECRET}" in api_env
+    assert "API_BIND_HOST=0.0.0.0" in api_env
+    assert "API_PORT=8000" in api_env
+    assert "$API_BIND_HOST" in services["backend-api"]["command"]
+    assert "$API_PORT" in services["backend-api"]["command"]
     readme = (ROOT / "README.md").read_text()
     assert "`kafka:9092`" in readme
     assert "`localhost:9094`" in readme
@@ -85,6 +89,10 @@ def test_backend_dockerfile_contains_shared():
     dockerfile_path = ROOT / "backend" / "Dockerfile"
     content = dockerfile_path.read_text()
     assert "COPY shared /app/shared" in content
+    assert "ENV API_BIND_HOST=127.0.0.1" in content
+    assert "ENV API_PORT=8000" in content
+    assert "--host \"$API_BIND_HOST\"" in content
+    assert "0.0.0.0" not in content
     
     dockerignore_path = ROOT / "backend" / ".dockerignore"
     if dockerignore_path.exists():
@@ -93,6 +101,14 @@ def test_backend_dockerfile_contains_shared():
     api_assessments = (ROOT / "backend" / "api_assessments.py").read_text()
     assert "from shared.report_contract import" in api_assessments
     assert not (ROOT / "backend" / "report_contract.py").exists()
+
+
+def test_release_workflows_pin_the_available_gitleaks_binary_and_config():
+    for workflow_name in ("portable-build.yml", "runtime-release-gate.yml"):
+        content = (ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8")
+        assert "gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e" in content
+        assert 'GITLEAKS_VERSION: "8.30.1"' in content
+        assert "GITLEAKS_CONFIG: .gitleaks.toml" in content
 
 
 def test_runtime_release_gate_schema_assertions():
@@ -282,7 +298,6 @@ def test_dead_letter_step_self_contained_event_id():
     id_def = dead_letter_section.index('event_id="runtime-dead-letter-')
     id_use = dead_letter_section.index('--event-id "${event_id}"')
     assert id_def < id_use
-
 
 
 

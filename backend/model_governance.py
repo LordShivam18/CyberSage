@@ -74,6 +74,15 @@ _UniqueKeyLoader.add_constructor(
 )
 
 
+def _load_unique_safe_yaml(source: str) -> Any:
+    """Parse YAML with SafeLoader semantics and duplicate-key rejection."""
+    loader = _UniqueKeyLoader(source)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -201,7 +210,7 @@ def load_dataset_manifest(path: str | Path) -> DatasetManifest:
     if not manifest_path.is_file():
         raise GovernanceError(f"Dataset manifest does not exist: {manifest_path}")
     try:
-        data = yaml.load(manifest_path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+        data = _load_unique_safe_yaml(manifest_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise GovernanceError(f"Dataset manifest is not valid YAML: {exc}") from exc
     if not isinstance(data, Mapping):

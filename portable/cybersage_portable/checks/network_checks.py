@@ -20,6 +20,7 @@ _RISKY_PORTS: dict[int, str] = {
     3306: "MySQL",
     5432: "PostgreSQL",
 }
+_WILDCARD_LISTEN_ADDRESS = str(IPv4Address(0))
 
 
 def _is_public_ip(addr: str) -> bool:
@@ -57,7 +58,7 @@ class ListeningPortsCheck(SecurityCheck):
             finding_id = f"{self.check_id}:tcp:{port_num}"
 
             risky_label = _RISKY_PORTS.get(port_num)
-            publicly_exposed = _is_public_ip(local_addr) or local_addr in {"0.0.0.0", "::"}
+            publicly_exposed = _is_public_ip(local_addr) or local_addr in {_WILDCARD_LISTEN_ADDRESS, "::"}
 
             if risky_label and publicly_exposed:
                 findings.append(self._make_finding(

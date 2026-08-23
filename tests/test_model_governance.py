@@ -153,6 +153,11 @@ def test_manifest_rejects_duplicate_keys_and_unknown_labels(tmp_path):
     with pytest.raises(GovernanceError, match="Duplicate manifest key"):
         load_dataset_manifest(duplicate)
 
+    unsafe = tmp_path / "unsafe.yaml"
+    unsafe.write_text("!!python/object/apply:os.system ['echo unsafe']\n", encoding="utf-8")
+    with pytest.raises(GovernanceError, match="not valid YAML"):
+        load_dataset_manifest(unsafe)
+
     manifest_path = _write_manifest(tmp_path)
     csv_path = tmp_path / "flows.csv"
     frame = pd.read_csv(csv_path)
@@ -168,6 +173,26 @@ def test_manifest_rejects_duplicate_keys_and_unknown_labels(tmp_path):
     leakage_manifest.write_text(leakage_text, encoding="utf-8")
     with pytest.raises(GovernanceError, match="cannot include the label"):
         load_manifest_dataset(load_dataset_manifest(leakage_manifest))
+
+
+def test_transformer_state_dict_loader_uses_weights_only_and_rejects_non_tensor_values(tmp_path, monkeypatch):
+    from backend import inference as inference_module
+
+    artifact_path = tmp_path / "transformer_model.pth"
+    expected = {"decoder.weight": inference_module.torch.zeros((2, 2))}
+    calls = {}
+
+    def safe_load(path, *, map_location, weights_only):
+        calls.update(path=path, map_location=map_location, weights_only=weights_only)
+        return expected
+
+    monkeypatch.setattr(inference_module.torch, "load", safe_load)
+    assert inference_module._load_transformer_state_dict(artifact_path) is expected
+    assert calls == {"path": artifact_path, "map_location": "cpu", "weights_only": True}
+
+    monkeypatch.setattr(inference_module.torch, "load", lambda *args, **kwargs: {"decoder.weight": "unsafe"})
+    with pytest.raises(GovernanceError, match="only named tensors"):
+        inference_module._load_transformer_state_dict(artifact_path)
 
 
 def test_validation_thresholds_and_drift_states():

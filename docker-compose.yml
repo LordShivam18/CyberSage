@@ -91,7 +91,10 @@ services:
       - APP_ENV=${APP_ENV:-development}
       - AUTO_MIGRATE=false
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+      - API_BIND_HOST=0.0.0.0
+      - API_PORT=8000
+    command: >-
+      sh -c 'exec uvicorn backend.main:app --host "$API_BIND_HOST" --port "$API_PORT" --reload'
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)\""]
       interval: 10s

@@ -36,6 +36,19 @@ def _infer_num_classes(state_dict: Dict[str, Any]) -> int:
     return 2
 
 
+def _load_transformer_state_dict(model_path: Path) -> Dict[str, torch.Tensor]:
+    """Load the governed Tensor-only state dict without object deserialization."""
+    try:
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+    except Exception as exc:
+        raise GovernanceError("Transformer artifact must be a safe PyTorch weights-only state dictionary") from exc
+    if not isinstance(state_dict, dict) or not state_dict:
+        raise GovernanceError("Transformer artifact must contain a non-empty PyTorch state dictionary")
+    if any(not isinstance(name, str) or not isinstance(value, torch.Tensor) for name, value in state_dict.items()):
+        raise GovernanceError("Transformer artifact state dictionary must contain only named tensors")
+    return state_dict
+
+
 def _severity_from_prediction(label: str, confidence: float) -> str:
     if label.upper() in {"BENIGN", "NORMAL"}:
         return "informational"
@@ -114,7 +127,7 @@ class ModelDetector:
                 self._set_fallback("Model or scaler artifact missing; heuristic fallback is active.")
                 return
             self.scaler = joblib.load(scaler_path)
-            state_dict = torch.load(model_path, map_location="cpu")
+            state_dict = _load_transformer_state_dict(model_path)
             architecture = self.metadata.get("architecture", {})
             self.model = ThreatTransformer(
                 len(self.feature_names) or 78,
