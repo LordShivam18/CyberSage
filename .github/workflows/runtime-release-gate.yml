@@ -100,7 +100,7 @@ jobs:
           pip-audit -r backend/requirements.txt --strict
           zizmor .github/workflows
           npm audit --prefix frontend --omit=dev --audit-level=high
-          cyclonedx-py environment --of JSON --output "${RUNTIME_ARTIFACT_DIR}/backend-environment.sbom.cdx.json"
+          cyclonedx-py environment --of JSON --output-file "${RUNTIME_ARTIFACT_DIR}/backend-environment.sbom.cdx.json"
           python scripts/release_metadata.py validate-sbom --sbom "${RUNTIME_ARTIFACT_DIR}/backend-environment.sbom.cdx.json"
 
       - name: Validate checkout, Compose, JSON, and workflow YAML
