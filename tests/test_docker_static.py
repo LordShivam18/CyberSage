@@ -73,6 +73,10 @@ def test_docker_compose_static_configuration():
     assert "API_PORT=8000" in api_env
     assert "$API_BIND_HOST" in services["backend-api"]["command"]
     assert "$API_PORT" in services["backend-api"]["command"]
+    # Compose must not interpolate container runtime variables;
+    # $$ escapes so the literal $ reaches the container shell.
+    assert "$$API_BIND_HOST" in services["backend-api"]["command"]
+    assert "$$API_PORT" in services["backend-api"]["command"]
     readme = (ROOT / "README.md").read_text()
     assert "`kafka:9092`" in readme
     assert "`localhost:9094`" in readme

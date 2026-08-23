@@ -94,7 +94,7 @@ services:
       - API_BIND_HOST=0.0.0.0
       - API_PORT=8000
     command: >-
-      sh -c 'exec uvicorn backend.main:app --host "$API_BIND_HOST" --port "$API_PORT" --reload'
+      sh -c 'exec uvicorn backend.main:app --host "$$API_BIND_HOST" --port "$$API_PORT" --reload'
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)\""]
       interval: 10s
