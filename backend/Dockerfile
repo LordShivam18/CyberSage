@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 COPY backend /app/backend
 COPY shared /app/shared
+COPY guardian /app/guardian
 COPY README.md /app/README.md
 COPY VERSION /app/VERSION
 
