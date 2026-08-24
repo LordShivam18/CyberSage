@@ -754,7 +754,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker compose exec -T backend-api python /tmp/runtime_release_gate.py guardian
+          docker compose exec -T \
+            -e "RUNTIME_ANALYST_USERNAME=${RUNTIME_ANALYST_USERNAME}" \
+            -e "RUNTIME_ANALYST_PASSWORD=${RUNTIME_ANALYST_PASSWORD}" \
+            -e "RUNTIME_AUDITOR_USERNAME=${RUNTIME_AUDITOR_USERNAME}" \
+            -e "RUNTIME_AUDITOR_PASSWORD=${RUNTIME_AUDITOR_PASSWORD}" \
+            backend-api python /tmp/runtime_release_gate.py guardian
 
       - name: Run final release-gate checks
         shell: bash
