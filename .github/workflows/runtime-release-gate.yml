@@ -444,6 +444,34 @@ jobs:
             IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE revision = '004_guardian_core') THEN
               RAISE EXCEPTION 'Migration tracking entry 004_guardian_core is missing';
             END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE revision = '005_guardian_phase2') THEN
+              RAISE EXCEPTION 'Migration tracking entry 005_guardian_phase2 is missing';
+            END IF;
+
+            FOREACH required_table IN ARRAY ARRAY[
+              'guardian_detections', 'guardian_incidents', 'guardian_incident_events',
+              'guardian_risk_scores', 'guardian_response_decisions'
+            ] LOOP
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = required_table
+              ) THEN
+                RAISE EXCEPTION 'Missing expected table %', required_table;
+              END IF;
+            END LOOP;
+
+            FOREACH required_table IN ARRAY ARRAY[
+              'ix_guardian_detections_detection_id', 'ix_guardian_detections_event_id',
+              'ix_guardian_detections_severity', 'ix_guardian_incidents_candidate_id',
+              'ix_guardian_incidents_severity', 'ix_guardian_incidents_status',
+              'ix_guardian_response_decisions_decision_id', 'ix_guardian_response_decisions_severity'
+            ] LOOP
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = required_table
+              ) THEN
+                RAISE EXCEPTION 'Missing expected index %', required_table;
+              END IF;
+            END LOOP;
           END $$;
           SQL
 
@@ -533,6 +561,10 @@ jobs:
 
             IF (SELECT COUNT(*) FROM schema_migrations WHERE revision = '004_guardian_core') <> 1 THEN
               RAISE EXCEPTION '004_guardian_core migration tracking is not idempotent';
+            END IF;
+
+            IF (SELECT COUNT(*) FROM schema_migrations WHERE revision = '005_guardian_phase2') <> 1 THEN
+              RAISE EXCEPTION '005_guardian_phase2 migration tracking is not idempotent';
             END IF;
 
             IF (SELECT COUNT(*) FROM alerts) <> 2 THEN

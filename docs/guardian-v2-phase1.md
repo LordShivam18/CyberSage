@@ -133,13 +133,17 @@ event_id = "guardian-" + SHA256(
 - **Permanent errors** (401, 403, 422): Event marked as `failed`, no retry
 - **Max retries:** 5 attempts before permanent `failed` state
 
-## Limitations (Phase 1)
+## Current State (Phase 2.5)
 
-- Only process lifecycle events are collected (no file, network, or persistence monitoring)
-- No detection, approval, or remediation capabilities
-- No Guardian UI tab
-- Agent identification uses a simplified lookup (production would use stored agent_id)
+Guardian event ingestion is now connected to the detection/risk/policy pipeline. When events are submitted via `POST /api/v1/guardian/events`, they are automatically processed through detectors, evidence aggregation, risk scoring, and policy evaluation. There is intentionally no separate API for clients to submit Detection objects directly — detections are produced by the deterministic pipeline from ingested events.
+
+## Limitations
+
+- Only process lifecycle events are collected by the placeholder ETW collector (no live file, network, or persistence monitoring)
 - ETW integration is a placeholder (production requires `etw` or `pywintrace` library)
+- Detection processing runs synchronously during event ingestion — future Phase 3 work may move this to a background worker for throughput/scalability
+- No remediation, approval execution, or rollback is implemented
+- No Guardian UI tab
 - No encrypted local storage for sensitive evidence (planned for later phases)
 
 ## Windows Support

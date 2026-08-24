@@ -537,7 +537,28 @@ def run_guardian_validation() -> None:
         r_alerts = client.get("/api/v1/alerts", headers=headers)
         require(r_alerts.status_code == 200, "Guardian: v1.1 alerts endpoint broken")
 
-    print("PASS: Guardian Phase 1 validation (registration, heartbeat, ingestion, idempotency, PostgreSQL persistence, v1.1 compat)")
+        # 10. Verify Phase 2 endpoints exist and are accessible
+        r_det = client.get("/api/v1/guardian/detections", headers=headers)
+        require(r_det.status_code == 200, f"Guardian Phase 2: detections endpoint failed ({r_det.status_code})")
+        require("total" in r_det.json(), "Guardian Phase 2: detections response missing 'total'")
+
+        r_inc = client.get("/api/v1/guardian/incidents", headers=headers)
+        require(r_inc.status_code == 200, f"Guardian Phase 2: incidents endpoint failed ({r_inc.status_code})")
+        require("total" in r_inc.json(), "Guardian Phase 2: incidents response missing 'total'")
+
+        # 11. Verify Phase 2 tables exist in PostgreSQL
+        db = SessionLocal()
+        try:
+            for table in ["guardian_detections", "guardian_incidents", "guardian_incident_events",
+                          "guardian_risk_scores", "guardian_response_decisions"]:
+                row = db.execute(
+                    text(f"SELECT COUNT(*) AS cnt FROM {table}"),
+                ).mappings().one()
+                require(int(row["cnt"]) >= 0, f"Guardian Phase 2: {table} query failed")
+        finally:
+            db.close()
+
+    print("PASS: Guardian Phase 1+2 validation (registration, heartbeat, ingestion, idempotency, PostgreSQL persistence, Phase 2 endpoints, v1.1 compat)")
 
 
 def main() -> None:

@@ -15,8 +15,11 @@ RBAC: admin, analyst, responder for writes; auditor for reads.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,6 +43,7 @@ from .models import (
     User,
     utcnow,
 )
+from guardian.detection.dispatcher import DetectionDispatcher
 
 router = APIRouter(prefix="/api/v1/guardian", tags=["guardian"])
 
@@ -409,6 +413,47 @@ def ingest_guardian_events(
         created_count += 1
 
     db.commit()
+
+    # ── Detection pipeline dispatch ────────────────────────────────
+    dispatcher = DetectionDispatcher()
+    for item in request.events:
+        if item.event_id not in [r.event_id for r in results if r.status == "created"]:
+            continue
+        # Build event dict for the dispatcher
+        event_row = db.query(GuardianEvent).filter(
+            GuardianEvent.event_id == item.event_id
+        ).first()
+        if event_row:
+            event_dict = {
+                "event_id": event_row.event_id,
+                "event_category": event_row.event_category,
+                "host_id": str(event_row.agent_id),
+                "process_name": event_row.process_name,
+                "process_pid": event_row.process_pid,
+                "process_exe_path": event_row.process_exe_path,
+                "process_exe_hash_sha256": event_row.process_exe_hash_sha256,
+                "process_command_line": event_row.process_command_line,
+                "parent_process_name": event_row.parent_process_name,
+                "parent_process_pid": event_row.parent_process_pid,
+                "parent_process_exe_path": event_row.parent_process_exe_path,
+                "user_name": event_row.user_name,
+                "source_ip": event_row.source_ip,
+                "source_port": event_row.source_port,
+                "destination_ip": event_row.destination_ip,
+                "destination_port": event_row.destination_port,
+                "protocol": event_row.protocol,
+                "file_path": event_row.file_path,
+                "file_operation": event_row.file_operation,
+                "persistence_type": event_row.persistence_type,
+                "persistence_path": event_row.persistence_path,
+                "persistence_data": event_row.persistence_data,
+                "evidence": event_row.evidence or {},
+            }
+            try:
+                dispatcher.dispatch(db, event_dict)
+            except Exception:
+                # Pipeline failure must not break ingestion
+                logger.error("Detection pipeline failed for event %s", item.event_id, exc_info=True)
 
     return GuardianEventIngestResponse(
         total=len(request.events),

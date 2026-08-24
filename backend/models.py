@@ -431,3 +431,91 @@ class GuardianEvent(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
     agent = relationship("GuardianAgent", back_populates="events")
+
+
+# ---------------------------------------------------------------------------
+# Guardian v2 -- Phase 2 (additive)
+# ---------------------------------------------------------------------------
+
+
+class GuardianDetection(Base):
+    __tablename__ = "guardian_detections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    detection_id = Column(String(128), unique=True, nullable=False, index=True)
+    event_id = Column(String(128), nullable=False, index=True)
+    detector_id = Column(String(64), nullable=False, index=True)
+    severity = Column(String(32), nullable=False, default="low", index=True)
+    confidence = Column(Float, nullable=False, default=0.0)
+    title = Column(String(512), nullable=False)
+    description = Column(Text, nullable=True)
+    evidence = Column(JSONType, nullable=False, default=dict)
+    mitre_technique = Column(String(32), nullable=True)
+    mitre_tactic = Column(String(64), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+
+
+class GuardianIncident(Base):
+    __tablename__ = "guardian_incidents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    candidate_id = Column(String(128), unique=True, nullable=False, index=True)
+    title = Column(String(512), nullable=False)
+    description = Column(Text, nullable=True)
+    severity = Column(String(32), nullable=False, default="low", index=True)
+    confidence = Column(Float, nullable=False, default=0.0)
+    status = Column(String(32), nullable=False, default="open", index=True)
+    evidence_ids = Column(JSONType, nullable=False, default=list)
+    event_ids = Column(JSONType, nullable=False, default=list)
+    host_ids = Column(JSONType, nullable=False, default=list)
+    mitre_techniques = Column(JSONType, nullable=False, default=list)
+    mitre_tactics = Column(JSONType, nullable=False, default=list)
+    risk_score_id = Column(Integer, nullable=True)
+    response_decision_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class GuardianIncidentEvent(Base):
+    __tablename__ = "guardian_incident_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    incident_id = Column(Integer, ForeignKey("guardian_incidents.id"), nullable=False, index=True)
+    event_id = Column(String(128), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False)
+    description = Column(Text, nullable=True)
+    data = Column(JSONType, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class GuardianRiskScore(Base):
+    __tablename__ = "guardian_risk_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    score = Column(Float, nullable=False, default=0.0)
+    severity = Column(String(32), nullable=False, default="low")
+    confidence = Column(Float, nullable=False, default=0.0)
+    factors = Column(JSONType, nullable=False, default=list)
+    explanation = Column(Text, nullable=True)
+    detection_ids = Column(JSONType, nullable=False, default=list)
+    incident_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+
+
+class GuardianResponseDecision(Base):
+    __tablename__ = "guardian_response_decisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    decision_id = Column(String(128), unique=True, nullable=False, index=True)
+    incident_id = Column(Integer, nullable=True, index=True)
+    severity = Column(String(32), nullable=False, default="low", index=True)
+    confidence = Column(Float, nullable=False, default=0.0)
+    recommended_action = Column(String(64), nullable=False, default="monitor")
+    rationale = Column(Text, nullable=True)
+    evidence = Column(JSONType, nullable=False, default=list)
+    expected_effect = Column(Text, nullable=True)
+    risk = Column(JSONType, nullable=True)
+    requires_approval = Column(Boolean, nullable=False, default=True)
+    rollback_available = Column(Boolean, nullable=False, default=False)
+    verification_plan = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
