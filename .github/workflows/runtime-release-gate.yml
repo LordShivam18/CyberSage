@@ -108,7 +108,7 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/version_contract.py
-          bandit -c .bandit.yaml -r backend portable shared -ll
+          bandit -c .bandit.yaml -r backend portable shared guardian -ll
           pip-audit -r backend/requirements.txt --strict
           zizmor .github/workflows
           npm audit --prefix frontend --omit=dev --audit-level=high
@@ -300,7 +300,8 @@ jobs:
             FOREACH required_table IN ARRAY ARRAY[
               'users', 'normalized_events', 'detections', 'alerts', 'incidents', 'incident_alerts',
               'analyst_feedback', 'threat_intel_cache', 'model_versions', 'audit_events',
-              'dead_letter_events', 'schema_migrations', 'assessment_runs', 'assessment_findings'
+              'dead_letter_events', 'schema_migrations', 'assessment_runs', 'assessment_findings',
+              'guardian_agents', 'guardian_heartbeats', 'guardian_events'
             ] LOOP
               IF NOT EXISTS (
                 SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = required_table
@@ -316,8 +317,10 @@ jobs:
               'ix_assessment_runs_imported_at', 'ix_assessment_runs_posture_score',
               'ix_assessment_runs_imported_by', 'ix_assessment_findings_run_id',
               'ix_assessment_findings_check_id', 'ix_assessment_findings_status',
-              'ix_assessment_findings_severity', 'ix_assessment_findings_category',
-              'ix_model_versions_task_status'
+              'ix_assessment_findings_severity', 'ix_assessment_findings_category',                'ix_model_versions_task_status',
+                'ix_guardian_agents_agent_key', 'ix_guardian_agents_status',
+                'ix_guardian_heartbeats_agent_id', 'ix_guardian_events_event_id',
+                'ix_guardian_events_agent_id', 'ix_guardian_events_event_category'
             ] LOOP
               IF NOT EXISTS (
                 SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = required_table
@@ -437,6 +440,10 @@ jobs:
             IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE revision = '003_portable_assessment') THEN
               RAISE EXCEPTION 'Migration tracking entry 003_portable_assessment is missing';
             END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE revision = '004_guardian_core') THEN
+              RAISE EXCEPTION 'Migration tracking entry 004_guardian_core is missing';
+            END IF;
           END $$;
           SQL
 
@@ -522,6 +529,10 @@ jobs:
 
             IF (SELECT COUNT(*) FROM schema_migrations WHERE revision = '003_portable_assessment') <> 1 THEN
               RAISE EXCEPTION '003_portable_assessment migration tracking is not idempotent';
+            END IF;
+
+            IF (SELECT COUNT(*) FROM schema_migrations WHERE revision = '004_guardian_core') <> 1 THEN
+              RAISE EXCEPTION '004_guardian_core migration tracking is not idempotent';
             END IF;
 
             IF (SELECT COUNT(*) FROM alerts) <> 2 THEN
@@ -738,6 +749,12 @@ jobs:
           wait_for_service detection-worker running
           docker compose exec -T backend-api python /tmp/runtime_release_gate.py kafka \
             --event-id "runtime-worker-recovery-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: Validate Guardian Phase 1 API
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose exec -T backend-api python /tmp/runtime_release_gate.py guardian
 
       - name: Run final release-gate checks
         shell: bash

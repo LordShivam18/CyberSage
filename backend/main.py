@@ -48,6 +48,7 @@ from .schemas import (
 from .serializers import alert_to_dict, detection_to_dict, event_to_dict, incident_to_dict
 from .threat_intel_service import threat_intel_service
 from .api_assessments import router as assessments_router
+from .api_guardian import router as guardian_router
 
 
 @asynccontextmanager
@@ -67,6 +68,7 @@ app.add_middleware(
 )
 
 app.include_router(assessments_router)
+app.include_router(guardian_router)
 
 ALERT_STATUSES = {"new", "acknowledged", "investigating", "resolved", "false_positive"}
 INCIDENT_STATUSES = {"new", "triaged", "investigating", "contained", "resolved", "false_positive"}

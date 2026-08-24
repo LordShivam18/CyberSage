@@ -412,11 +412,139 @@ def run_readiness_validation() -> None:
     print("PASS: API readiness validation")
 
 
+def run_guardian_validation() -> None:
+    """Validate Guardian Phase 1: registration, heartbeat, event ingestion, idempotency."""
+    analyst_username = os.environ["RUNTIME_ANALYST_USERNAME"]
+    analyst_password = os.environ["RUNTIME_ANALYST_PASSWORD"]
+
+    with httpx.Client(base_url=API_BASE_URL, timeout=15) as client:
+        # Login
+        login_response = client.post(
+            "/api/v1/auth/login",
+            json={"username": analyst_username, "password": analyst_password},
+        )
+        require(login_response.status_code == 200, "Guardian: analyst login failed")
+        token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Agent registration (idempotent)
+        agent_payload = {
+            "agent_key": f"runtime-guardian-{uuid.uuid4().hex[:12]}",
+            "hostname": "ci-runner",
+            "host_id": f"ci-host-{uuid.uuid4().hex[:8]}",
+            "os_name": "linux",
+            "os_version": "ci",
+            "agent_version": "2.0.0",
+        }
+        r1 = client.post("/api/v1/guardian/agents/register", json=agent_payload, headers=headers)
+        require(r1.status_code == 200, f"Guardian: agent registration failed ({r1.status_code})")
+        agent_id = r1.json()["agent"]["id"]
+
+        # Idempotent re-registration
+        r2 = client.post("/api/v1/guardian/agents/register", json=agent_payload, headers=headers)
+        require(r2.status_code == 200, "Guardian: idempotent registration failed")
+        require(r2.json()["agent"]["id"] == agent_id, "Guardian: re-registration created duplicate agent")
+
+        # 2. Heartbeat with stable agent_key
+        r_hb = client.post(
+            "/api/v1/guardian/heartbeat",
+            json={
+                "agent_key": agent_payload["agent_key"],
+                "agent_version": "2.0.0",
+                "uptime_seconds": 60,
+                "events_queued": 0,
+                "events_processed": 0,
+            },
+            headers=headers,
+        )
+        require(r_hb.status_code == 200, f"Guardian: heartbeat failed ({r_hb.status_code})")
+        require(r_hb.json()["status"] == "ok", "Guardian: heartbeat status not ok")
+        require(r_hb.json()["agent_id"] == agent_id, "Guardian: heartbeat resolved wrong agent")
+
+        # 3. Event ingestion with stable agent_key
+        event_id_1 = f"runtime-guardian-event-{uuid.uuid4().hex[:12]}"
+        event_id_2 = f"runtime-guardian-event-{uuid.uuid4().hex[:12]}"
+        r_ev = client.post(
+            "/api/v1/guardian/events",
+            json={
+                "agent_key": agent_payload["agent_key"],
+                "events": [
+                    {"event_id": event_id_1, "event_category": "process", "process_name": "ci-test"},
+                    {"event_id": event_id_2, "event_category": "file", "file_path": "/tmp/test"},
+                ]
+            },
+            headers=headers,
+        )
+        require(r_ev.status_code == 200, f"Guardian: event ingestion failed ({r_ev.status_code})")
+        require(r_ev.json()["created"] == 2, "Guardian: expected 2 events created")
+        require(r_ev.json()["duplicate"] == 0, "Guardian: unexpected duplicates on first ingest")
+
+        # 4. Idempotency — re-ingest same events
+        r_dup = client.post(
+            "/api/v1/guardian/events",
+            json={
+                "events": [
+                    {"event_id": event_id_1, "event_category": "process"},
+                    {"event_id": event_id_2, "event_category": "file"},
+                ]
+            },
+            headers=headers,
+        )
+        require(r_dup.status_code == 200, f"Guardian: duplicate ingest failed ({r_dup.status_code})")
+        require(r_dup.json()["duplicate"] == 2, "Guardian: idempotency check failed — duplicates not detected")
+        require(r_dup.json()["created"] == 0, "Guardian: duplicate ingest created new records")
+
+        # 5. Event query
+        r_list = client.get("/api/v1/guardian/events", headers=headers)
+        require(r_list.status_code == 200, "Guardian: event query failed")
+        require(r_list.json()["total"] >= 2, "Guardian: event query returned fewer than 2 events")
+
+        # 6. Stats
+        r_stats = client.get("/api/v1/guardian/stats", headers=headers)
+        require(r_stats.status_code == 200, "Guardian: stats endpoint failed")
+        require(r_stats.json()["agents"]["total"] >= 1, "Guardian: stats shows no agents")
+        require(r_stats.json()["events"]["total"] >= 2, "Guardian: stats shows fewer than 2 events")
+
+        # 7. Verify PostgreSQL persistence
+        db = SessionLocal()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT COUNT(*) AS cnt FROM guardian_events WHERE event_id IN (:e1, :e2)"
+                ),
+                {"e1": event_id_1, "e2": event_id_2},
+            ).mappings().one()
+            require(int(row["cnt"]) == 2, "Guardian: PostgreSQL did not persist both events")
+        finally:
+            db.close()
+
+        # 8. Verify idempotency in PostgreSQL (still exactly 2, not 4)
+        db = SessionLocal()
+        try:
+            row = db.execute(
+                text(
+                    "SELECT COUNT(*) AS cnt FROM guardian_events WHERE event_id IN (:e1, :e2)"
+                ),
+                {"e1": event_id_1, "e2": event_id_2},
+            ).mappings().one()
+            require(int(row["cnt"]) == 2, "Guardian: PostgreSQL idempotency broken — duplicate records found")
+        finally:
+            db.close()
+
+        # 9. Verify v1.1 endpoints still work
+        r_health = client.get("/api/v1/health")
+        require(r_health.status_code == 200, "Guardian: v1.1 health endpoint broken")
+        r_alerts = client.get("/api/v1/alerts", headers=headers)
+        require(r_alerts.status_code == 200, "Guardian: v1.1 alerts endpoint broken")
+
+    print("PASS: Guardian Phase 1 validation (registration, heartbeat, ingestion, idempotency, PostgreSQL persistence, v1.1 compat)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Runtime release gate assertions")
     parser.add_argument(
         "mode",
-        choices=("auth-ws", "kafka", "fixtures", "dead-letter", "ready"),
+        choices=("auth-ws", "kafka", "fixtures", "dead-letter", "ready", "guardian"),
         help="Validation stage to execute",
     )
     parser.add_argument("--event-id", help="Unique Kafka event identifier")
@@ -432,6 +560,8 @@ def main() -> None:
     elif args.mode == "dead-letter":
         require(bool(args.event_id), "Dead-letter validation requires --event-id")
         run_dead_letter_validation(args.event_id)
+    elif args.mode == "guardian":
+        run_guardian_validation()
     else:
         run_readiness_validation()
 

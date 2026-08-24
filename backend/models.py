@@ -339,3 +339,95 @@ class AssessmentFinding(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
     assessment_run = relationship("AssessmentRun", back_populates="findings")
+
+
+# ---------------------------------------------------------------------------
+# Guardian v2 -- Phase 1 (additive)
+# ---------------------------------------------------------------------------
+
+
+class GuardianAgent(Base):
+    __tablename__ = "guardian_agents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_key = Column(String(128), unique=True, nullable=False, index=True)
+    hostname = Column(String(255), nullable=False)
+    host_id = Column(String(128), nullable=True)
+    os_name = Column(String(128), nullable=True)
+    os_version = Column(String(128), nullable=True)
+    agent_version = Column(String(64), nullable=True)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    registered_at = Column(DateTime, nullable=False, default=utcnow)
+    last_heartbeat_at = Column(DateTime, nullable=True)
+    metadata_json = Column(JSONType, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+    heartbeats = relationship("GuardianHeartbeat", back_populates="agent")
+    events = relationship("GuardianEvent", back_populates="agent")
+
+
+class GuardianHeartbeat(Base):
+    __tablename__ = "guardian_heartbeats"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_id = Column(Integer, ForeignKey("guardian_agents.id"), nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, default=utcnow, index=True)
+    agent_version = Column(String(64), nullable=True)
+    uptime_seconds = Column(Integer, nullable=True)
+    cpu_usage_pct = Column(Float, nullable=True)
+    memory_usage_pct = Column(Float, nullable=True)
+    events_queued = Column(Integer, nullable=True, default=0)
+    events_processed = Column(Integer, nullable=True, default=0)
+    detections_pending = Column(Integer, nullable=True, default=0)
+    metadata_json = Column(JSONType, nullable=False, default=dict)
+
+    agent = relationship("GuardianAgent", back_populates="heartbeats")
+
+
+class GuardianEvent(Base):
+    __tablename__ = "guardian_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(String(128), unique=True, nullable=False, index=True)
+    schema_version = Column(String(32), nullable=False, default="guardian.event.v1")
+    agent_id = Column(Integer, ForeignKey("guardian_agents.id"), nullable=False, index=True)
+    event_category = Column(String(32), nullable=False, default="process", index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    ingestion_timestamp = Column(DateTime, nullable=False, default=utcnow)
+
+    process_name = Column(String(255), nullable=True)
+    process_pid = Column(Integer, nullable=True)
+    process_exe_path = Column(Text, nullable=True, index=True)
+    process_exe_hash_sha256 = Column(String(128), nullable=True)
+    process_command_line = Column(Text, nullable=True)
+    parent_process_name = Column(String(255), nullable=True)
+    parent_process_pid = Column(Integer, nullable=True)
+    parent_process_exe_path = Column(Text, nullable=True)
+
+    user_name = Column(String(255), nullable=True)
+    user_sid = Column(String(128), nullable=True)
+
+    source_ip = Column(String(64), nullable=True)
+    source_port = Column(Integer, nullable=True)
+    destination_ip = Column(String(64), nullable=True, index=True)
+    destination_port = Column(Integer, nullable=True)
+    protocol = Column(String(32), nullable=True)
+    bytes_sent = Column(Float, nullable=True)
+    bytes_received = Column(Float, nullable=True)
+
+    file_path = Column(Text, nullable=True)
+    file_operation = Column(String(32), nullable=True)
+    file_hash_sha256 = Column(String(128), nullable=True)
+
+    persistence_type = Column(String(64), nullable=True)
+    persistence_path = Column(Text, nullable=True)
+    persistence_data = Column(JSONType, nullable=True)
+
+    evidence = Column(JSONType, nullable=False, default=dict)
+    raw_event = Column(JSONType, nullable=False, default=dict)
+    status = Column(String(32), nullable=False, default="ingested", index=True)
+
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    agent = relationship("GuardianAgent", back_populates="events")
