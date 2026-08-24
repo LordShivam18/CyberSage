@@ -17,6 +17,10 @@ revision = "004_guardian_core"
 
 def upgrade(engine, base) -> None:
     json_type = "JSONB" if engine.dialect.name == "postgresql" else "JSON"
+    if engine.dialect.name == "postgresql":
+        id_col = "id SERIAL PRIMARY KEY"
+    else:
+        id_col = "id INTEGER PRIMARY KEY AUTOINCREMENT"
 
     with engine.begin() as conn:
         # guardian_agents
@@ -24,7 +28,7 @@ def upgrade(engine, base) -> None:
             text(
                 f"""
                 CREATE TABLE IF NOT EXISTS guardian_agents (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    {id_col},
                     agent_key VARCHAR(128) UNIQUE NOT NULL,
                     hostname VARCHAR(255) NOT NULL,
                     host_id VARCHAR(128),
@@ -47,7 +51,7 @@ def upgrade(engine, base) -> None:
             text(
                 f"""
                 CREATE TABLE IF NOT EXISTS guardian_heartbeats (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    {id_col},
                     agent_id INTEGER NOT NULL,
                     timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     agent_version VARCHAR(64),
@@ -68,7 +72,7 @@ def upgrade(engine, base) -> None:
             text(
                 f"""
                 CREATE TABLE IF NOT EXISTS guardian_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    {id_col},
                     event_id VARCHAR(128) UNIQUE NOT NULL,
                     schema_version VARCHAR(32) NOT NULL DEFAULT 'guardian.event.v1',
                     agent_id INTEGER NOT NULL,
