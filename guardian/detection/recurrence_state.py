@@ -25,6 +25,7 @@ class RecurrenceState:
 
     def __init__(self, session: Session) -> None:
         self._session = session
+        self.ensure_table()
 
     def ensure_table(self) -> None:
         """Create the recurrence state table if it doesn't exist."""

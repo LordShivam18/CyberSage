@@ -305,6 +305,75 @@ class TestEventIngestion:
         )
         assert response.status_code in (401, 403)
 
+    def test_mixed_category_batch_succeeds(self, client, admin_user):
+        """Regression: batch with process + file events must not return 500.
+
+        The process event triggers RecurrenceState.increment() which requires
+        the guardian_recurrence_state table. The file event's db.query() must
+        not fail on a broken session after the first dispatch.
+        """
+        _, token = admin_user
+        client.post(
+            "/api/v1/guardian/agents/register",
+            json={"agent_key": "agent-001", "hostname": "DESKTOP-01"},
+            headers=_auth_header(token),
+        )
+        # This exact payload mirrors the runtime release gate CI validation
+        import uuid
+        event_id_1 = f"runtime-guardian-event-{uuid.uuid4().hex[:12]}"
+        event_id_2 = f"runtime-guardian-event-{uuid.uuid4().hex[:12]}"
+        response = client.post(
+            "/api/v1/guardian/events",
+            json={
+                "agent_key": "agent-001",
+                "events": [
+                    {"event_id": event_id_1, "event_category": "process", "process_name": "ci-test"},
+                    {"event_id": event_id_2, "event_category": "file", "file_path": "/tmp/test"},
+                ],
+            },
+            headers=_auth_header(token),
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["created"] == 2
+        assert data["duplicate"] == 0
+
+    def test_recurrence_state_table_created_automatically(self, client, admin_user):
+        """Regression: RecurrenceState must create its table on first use."""
+        from sqlalchemy import text
+        from backend.database import SessionLocal
+        _, token = admin_user
+        client.post(
+            "/api/v1/guardian/agents/register",
+            json={"agent_key": "agent-001", "hostname": "DESKTOP-01"},
+            headers=_auth_header(token),
+        )
+        client.post(
+            "/api/v1/guardian/events",
+            json={
+                "events": [
+                    {"event_id": "recurrence-test-001", "event_category": "process", "process_name": "test.exe"}
+                ]
+            },
+            headers=_auth_header(token),
+        )
+        db = SessionLocal()
+        try:
+            # Use dialect-agnostic check (works on both PostgreSQL and SQLite)
+            result = db.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='guardian_recurrence_state'")
+            ).fetchone()
+            if result is None:
+                # Fallback for PostgreSQL
+                result = db.execute(
+                    text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'guardian_recurrence_state')")
+                ).scalar()
+                assert result is True, "guardian_recurrence_state table was not created automatically"
+            else:
+                assert result[0] == "guardian_recurrence_state"
+        finally:
+            db.close()
+
 
 class TestEventQuery:
     def test_list_events(self, client, admin_user):

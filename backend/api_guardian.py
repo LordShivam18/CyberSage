@@ -454,6 +454,7 @@ def ingest_guardian_events(
             except Exception:
                 # Pipeline failure must not break ingestion
                 logger.error("Detection pipeline failed for event %s", item.event_id, exc_info=True)
+                db.rollback()
 
     return GuardianEventIngestResponse(
         total=len(request.events),
