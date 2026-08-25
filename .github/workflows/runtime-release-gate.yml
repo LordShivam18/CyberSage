@@ -767,7 +767,7 @@ jobs:
             exit 1
           fi
 
-          docker compose start db
+          docker compose restart db
           wait_for_service db healthy
           wait_for_api_ready
           after_data="$(docker compose exec -T db psql -At -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
