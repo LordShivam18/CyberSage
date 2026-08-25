@@ -50,6 +50,7 @@ from .threat_intel_service import threat_intel_service
 from .api_assessments import router as assessments_router
 from .api_guardian import router as guardian_router
 from .api_guardian_phase2 import router as guardian_phase2_router
+from .api_guardian_phase3 import router as guardian_phase3_router
 
 
 @asynccontextmanager
@@ -71,6 +72,7 @@ app.add_middleware(
 app.include_router(assessments_router)
 app.include_router(guardian_router)
 app.include_router(guardian_phase2_router)
+app.include_router(guardian_phase3_router)
 
 ALERT_STATUSES = {"new", "acknowledged", "investigating", "resolved", "false_positive"}
 INCIDENT_STATUSES = {"new", "triaged", "investigating", "contained", "resolved", "false_positive"}

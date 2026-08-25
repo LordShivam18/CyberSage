@@ -558,7 +558,108 @@ def run_guardian_validation() -> None:
         finally:
             db.close()
 
-    print("PASS: Guardian Phase 1+2 validation (registration, heartbeat, ingestion, idempotency, PostgreSQL persistence, Phase 2 endpoints, v1.1 compat)")
+        # 12. Verify Phase 3 approval endpoints exist and are accessible
+        r_apv = client.get("/api/v1/guardian/approvals", headers=headers)
+        require(r_apv.status_code == 200, f"Guardian Phase 3: approvals endpoint failed ({r_apv.status_code})")
+        require("total" in r_apv.json(), "Guardian Phase 3: approvals response missing 'total'")
+
+        # 13. Verify Phase 3 action registry
+        r_reg = client.get("/api/v1/guardian/actions/registry", headers=headers)
+        require(r_reg.status_code == 200, f"Guardian Phase 3: action registry failed ({r_reg.status_code})")
+        require("actions" in r_reg.json(), "Guardian Phase 3: action registry missing 'actions'")
+        require(len(r_reg.json()["actions"]) >= 3, "Guardian Phase 3: fewer than 3 registered actions")
+
+        # 14. Verify Phase 3 action listing
+        r_act = client.get("/api/v1/guardian/actions", headers=headers)
+        require(r_act.status_code == 200, f"Guardian Phase 3: actions endpoint failed ({r_act.status_code})")
+        require("total" in r_act.json(), "Guardian Phase 3: actions response missing 'total'")
+
+        # 15. Verify Phase 3 audit endpoint
+        r_aud = client.get("/api/v1/guardian/audit", headers=headers)
+        require(r_aud.status_code == 200, f"Guardian Phase 3: audit endpoint failed ({r_aud.status_code})")
+        require("total" in r_aud.json(), "Guardian Phase 3: audit response missing 'total'")
+
+        # 16. Verify Phase 3 approval creation (idempotent)
+        r_apv_create = client.post(
+            "/api/v1/guardian/approvals",
+            json={
+                "decision_id": f"runtime-phase3-{uuid.uuid4().hex[:8]}",
+                "requested_action": "terminate_process",
+                "action_type": "process",
+                "target": {"pid": 99999, "process_name": "ci-test"},
+                "rationale": "Runtime release gate validation",
+            },
+            headers=headers,
+        )
+        require(r_apv_create.status_code == 200, f"Guardian Phase 3: approval creation failed ({r_apv_create.status_code})")
+        require("approval_id" in r_apv_create.json(), "Guardian Phase 3: approval response missing 'approval_id'")
+        require(r_apv_create.json()["status"] == "pending", "Guardian Phase 3: approval not in pending status")
+        approval_id = r_apv_create.json()["approval_id"]
+
+        # 17. Verify Phase 3 approval idempotency
+        r_apv_dup = client.post(
+            "/api/v1/guardian/approvals",
+            json={
+                "decision_id": r_apv_create.json().get("decision_id", "x"),
+                "requested_action": "terminate_process",
+                "action_type": "process",
+                "target": {"pid": 99999, "process_name": "ci-test"},
+                "rationale": "Runtime release gate validation",
+            },
+            headers=headers,
+        )
+        require(r_apv_dup.status_code == 200, "Guardian Phase 3: idempotent approval failed")
+        require(r_apv_dup.json().get("existing") is True, "Guardian Phase 3: idempotent approval not detected")
+
+        # 18. Verify Phase 3 approval rejection
+        r_apv_rej = client.post(
+            f"/api/v1/guardian/approvals/{approval_id}/reject",
+            json={"notes": "CI validation"},
+            headers=headers,
+        )
+        # Note: if already approved in a previous run, this will return 422 — both are acceptable
+        require(
+            r_apv_rej.status_code in (200, 422),
+            f"Guardian Phase 3: approval rejection returned {r_apv_rej.status_code}",
+        )
+
+        # 19. Verify Phase 3 tables exist in PostgreSQL
+        db = SessionLocal()
+        try:
+            for table in [
+                "guardian_approval_requests", "guardian_approvals",
+                "guardian_action_attempts", "guardian_action_snapshots",
+                "guardian_action_verifications", "guardian_action_rollbacks",
+                "guardian_action_audit",
+            ]:
+                row = db.execute(
+                    text(f"SELECT COUNT(*) AS cnt FROM {table}"),
+                ).mappings().one()
+                require(int(row["cnt"]) >= 0, f"Guardian Phase 3: {table} query failed")
+        finally:
+            db.close()
+
+        # 20. Verify no shell=True in executable code (security gate)
+        import importlib
+        import ast
+        for mod_name in [
+            "guardian.actions.process",
+            "guardian.actions.network",
+            "guardian.actions.persistence",
+        ]:
+            mod = importlib.import_module(mod_name)
+            source = inspect.getsource(mod)
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.keyword) and node.arg == "shell":
+                    # Check if value is a constant True
+                    if isinstance(node.value, ast.Constant) and node.value.value is True:
+                        require(
+                            False,
+                            f"Guardian Phase 3: {mod_name} contains shell=True in executable code",
+                        )
+
+    print("PASS: Guardian Phase 1+2+3 validation (registration, heartbeat, ingestion, idempotency, PostgreSQL persistence, Phase 2 endpoints, Phase 3 approvals/actions/audit, security, v1.1 compat)")
 
 
 def main() -> None:

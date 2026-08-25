@@ -4,10 +4,10 @@ from sqlalchemy import inspect, text
 
 from ..database import Base, engine
 from .. import models  # noqa: F401 - registers SQLAlchemy models
-from .versions import model_governance_002, platform_001, portable_assessment_003, guardian_core_004, guardian_phase2_005
+from .versions import model_governance_002, platform_001, portable_assessment_003, guardian_core_004, guardian_phase2_005, guardian_phase3_006
 
 
-MIGRATIONS = [platform_001, model_governance_002, portable_assessment_003, guardian_core_004, guardian_phase2_005]
+MIGRATIONS = [platform_001, model_governance_002, portable_assessment_003, guardian_core_004, guardian_phase2_005, guardian_phase3_006]
 
 
 def _ensure_migration_table(connection):
@@ -22,11 +22,9 @@ def _ensure_migration_table(connection):
         )
     )
 
-
 def _applied_revisions(connection) -> Iterable[str]:
     result = connection.execute(text("SELECT revision FROM schema_migrations"))
     return {row[0] for row in result}
-
 
 def run_migrations(target_engine=None) -> None:
     active_engine = target_engine or engine
@@ -43,7 +41,6 @@ def run_migrations(target_engine=None) -> None:
                 text("INSERT INTO schema_migrations (revision) VALUES (:revision)"),
                 {"revision": migration.revision},
             )
-
 
 def current_revision(target_engine=None):
     active_engine = target_engine or engine

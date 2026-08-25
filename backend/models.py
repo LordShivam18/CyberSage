@@ -519,3 +519,129 @@ class GuardianResponseDecision(Base):
     rollback_available = Column(Boolean, nullable=False, default=False)
     verification_plan = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Guardian v2 -- Phase 3 (additive)
+# ---------------------------------------------------------------------------
+
+
+class GuardianApprovalRequest(Base):
+    __tablename__ = "guardian_approval_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    approval_id = Column(String(128), unique=True, nullable=False, index=True)
+    incident_id = Column(Integer, nullable=True, index=True)
+    decision_id = Column(String(128), nullable=False, index=True)
+    requested_action = Column(String(64), nullable=False)
+    action_type = Column(String(64), nullable=False)
+    target = Column(JSONType, nullable=False, default=dict)
+    rationale = Column(Text, nullable=False, default="")
+    risk = Column(JSONType, nullable=True)
+    status = Column(String(32), nullable=False, default="pending", index=True)
+    requested_by = Column(String(255), nullable=False, default="system")
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class GuardianApproval(Base):
+    __tablename__ = "guardian_approvals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    approval_record_id = Column(String(128), unique=True, nullable=False, index=True)
+    approval_request_id = Column(Integer, ForeignKey("guardian_approval_requests.id"), nullable=False, index=True)
+    approver = Column(String(255), nullable=False)
+    decision = Column(String(32), nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class GuardianActionAttempt(Base):
+    __tablename__ = "guardian_action_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action_id = Column(String(128), unique=True, nullable=False, index=True)
+    approval_id = Column(String(128), nullable=False, index=True)
+    incident_id = Column(Integer, nullable=True, index=True)
+    decision_id = Column(String(128), nullable=False)
+    action_type = Column(String(64), nullable=False)
+    action_name = Column(String(128), nullable=False)
+    target = Column(JSONType, nullable=False, default=dict)
+    parameters = Column(JSONType, nullable=False, default=dict)
+    status = Column(String(32), nullable=False, default="planned", index=True)
+    execution_started_at = Column(DateTime, nullable=True)
+    execution_finished_at = Column(DateTime, nullable=True)
+    result = Column(JSONType, nullable=True)
+    error = Column(Text, nullable=True)
+    snapshot_id = Column(String(128), nullable=True)
+    verification_id = Column(String(128), nullable=True)
+    rollback_id = Column(String(128), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class GuardianActionSnapshot(Base):
+    __tablename__ = "guardian_action_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_id = Column(String(128), unique=True, nullable=False, index=True)
+    action_id = Column(String(128), nullable=False, index=True)
+    action_type = Column(String(64), nullable=False)
+    target = Column(JSONType, nullable=False, default=dict)
+    prior_state = Column(JSONType, nullable=False, default=dict)
+    snapshot_metadata = Column(JSONType, nullable=False, default=dict)
+    immutable = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class GuardianActionVerification(Base):
+    __tablename__ = "guardian_action_verifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    verification_id = Column(String(128), unique=True, nullable=False, index=True)
+    action_id = Column(String(128), nullable=False, index=True)
+    passed = Column(Boolean, nullable=False, default=False)
+    checks = Column(JSONType, nullable=False, default=list)
+    evidence = Column(JSONType, nullable=False, default=dict)
+    observed_state = Column(JSONType, nullable=False, default=dict)
+    failure_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class GuardianActionRollback(Base):
+    __tablename__ = "guardian_action_rollbacks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rollback_id = Column(String(128), unique=True, nullable=False, index=True)
+    action_id = Column(String(128), nullable=False, index=True)
+    snapshot_id = Column(String(128), nullable=False)
+    status = Column(String(32), nullable=False, default="available")
+    result = Column(JSONType, nullable=True)
+    error = Column(Text, nullable=True)
+    requested_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class GuardianActionAudit(Base):
+    __tablename__ = "guardian_action_audit"
+
+    id = Column(Integer, primary_key=True, index=True)
+    audit_id = Column(String(128), unique=True, nullable=False, index=True)
+    incident_id = Column(Integer, nullable=True, index=True)
+    approval_id = Column(String(128), nullable=True)
+    action_id = Column(String(128), nullable=False, index=True)
+    actor = Column(String(255), nullable=False)
+    action_type = Column(String(64), nullable=False)
+    target = Column(JSONType, nullable=False, default=dict)
+    snapshot_id = Column(String(128), nullable=True)
+    execution_started_at = Column(DateTime, nullable=True)
+    execution_finished_at = Column(DateTime, nullable=True)
+    verification_passed = Column(Boolean, nullable=True)
+    verification_result = Column(JSONType, nullable=True)
+    rollback_result = Column(JSONType, nullable=True)
+    status = Column(String(32), nullable=False, default="planned", index=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
