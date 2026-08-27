@@ -768,6 +768,12 @@ class TestAuditTrail:
         # Analyst should not be able to access audit
         assert r.status_code == 403
 
+    def test_audit_endpoint_auditor_can_read(self, client, auditor_user):
+        _, token = auditor_user
+        r = client.get("/api/v1/guardian/audit", headers=_auth_header(token))
+        assert r.status_code == 200
+        assert "total" in r.json()
+
 
 # ══════════════════════════════════════════════════════════════════════
 # 11. SECURITY TESTS

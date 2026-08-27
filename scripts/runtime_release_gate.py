@@ -416,9 +416,11 @@ def run_guardian_validation() -> None:
     """Validate Guardian Phase 1: registration, heartbeat, event ingestion, idempotency."""
     analyst_username = os.environ["RUNTIME_ANALYST_USERNAME"]
     analyst_password = os.environ["RUNTIME_ANALYST_PASSWORD"]
+    auditor_username = os.environ["RUNTIME_AUDITOR_USERNAME"]
+    auditor_password = os.environ["RUNTIME_AUDITOR_PASSWORD"]
 
     with httpx.Client(base_url=API_BASE_URL, timeout=15) as client:
-        # Login
+        # Login as analyst
         login_response = client.post(
             "/api/v1/auth/login",
             json={"username": analyst_username, "password": analyst_password},
@@ -426,6 +428,15 @@ def run_guardian_validation() -> None:
         require(login_response.status_code == 200, "Guardian: analyst login failed")
         token = login_response.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
+
+        # Login as auditor (for audit-endpoint access)
+        auditor_login = client.post(
+            "/api/v1/auth/login",
+            json={"username": auditor_username, "password": auditor_password},
+        )
+        require(auditor_login.status_code == 200, "Guardian: auditor login failed")
+        auditor_token = auditor_login.json()["access_token"]
+        auditor_headers = {"Authorization": f"Bearer {auditor_token}"}
 
         # 1. Agent registration (idempotent)
         agent_payload = {
@@ -574,8 +585,15 @@ def run_guardian_validation() -> None:
         require(r_act.status_code == 200, f"Guardian Phase 3: actions endpoint failed ({r_act.status_code})")
         require("total" in r_act.json(), "Guardian Phase 3: actions response missing 'total'")
 
-        # 15. Verify Phase 3 audit endpoint
-        r_aud = client.get("/api/v1/guardian/audit", headers=headers)
+        # 15. Verify Phase 3 audit endpoint — RBAC enforcement
+        # Negative: security_analyst must be denied
+        r_aud_analyst = client.get("/api/v1/guardian/audit", headers=headers)
+        require(
+            r_aud_analyst.status_code == 403,
+            f"Guardian Phase 3: audit endpoint did not reject security_analyst ({r_aud_analyst.status_code})",
+        )
+        # Positive: read_only_auditor is authorized
+        r_aud = client.get("/api/v1/guardian/audit", headers=auditor_headers)
         require(r_aud.status_code == 200, f"Guardian Phase 3: audit endpoint failed ({r_aud.status_code})")
         require("total" in r_aud.json(), "Guardian Phase 3: audit response missing 'total'")
 
