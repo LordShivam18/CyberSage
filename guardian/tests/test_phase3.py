@@ -13,9 +13,11 @@ Tests cover:
 - Adversarial cases (approval bypass, decision tampering, expired/rejected approval)
 """
 
+import inspect
 import os
 import sys
 import tempfile
+import textwrap
 
 import pytest
 
@@ -37,6 +39,7 @@ except ImportError as exc:
 from guardian.actions.base import (
     ActionStatus,
     ApprovalStatus,
+    ExecutionResult,
     RollbackStatus,
     ValidationResult,
     SnapshotData,
@@ -778,7 +781,7 @@ class TestSecurity:
         """Process action must not use shell=True in executable code."""
         import ast
         source = inspect.getsource(TerminateProcessAction.execute)
-        tree = ast.parse(source)
+        tree = ast.parse(textwrap.dedent(source))
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "shell":
                 if isinstance(node.value, ast.Constant) and node.value.value is True:
@@ -788,7 +791,7 @@ class TestSecurity:
         """Network action must not use shell=True in executable code."""
         import ast
         source = inspect.getsource(BlockDestinationAction.execute)
-        tree = ast.parse(source)
+        tree = ast.parse(textwrap.dedent(source))
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "shell":
                 if isinstance(node.value, ast.Constant) and node.value.value is True:
@@ -798,7 +801,7 @@ class TestSecurity:
         """Persistence action must not use shell=True in executable code."""
         import ast
         source = inspect.getsource(DisablePersistenceEntryAction.execute)
-        tree = ast.parse(source)
+        tree = ast.parse(textwrap.dedent(source))
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "shell":
                 if isinstance(node.value, ast.Constant) and node.value.value is True:
