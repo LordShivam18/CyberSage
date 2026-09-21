@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from guardian.actions.base import (
     ActionStatus,
@@ -121,7 +122,22 @@ class ApprovalManager:
             updated_at=now,
         )
         session.add(request)
-        session.flush()
+        
+        try:
+            session.flush()
+        except IntegrityError:
+            session.rollback()
+            existing = session.query(GuardianApprovalRequest).filter(
+                GuardianApprovalRequest.approval_id == approval_id,
+            ).first()
+            if existing:
+                return {
+                    "approval_id": existing.approval_id,
+                    "status": existing.status,
+                    "created_at": existing.created_at.isoformat() if existing.created_at else None,
+                    "existing": True,
+                }
+            raise  # Reraise if it's some other integrity error not related to approval_id
 
         logger.info("Created approval request %s for action %s", approval_id, requested_action)
 

@@ -279,6 +279,7 @@ class ProcessMonitorCollector(BaseCollector):
         self._events_dropped: int = 0
         self._reconnect_count: int = 0
         self._last_event_at: Optional[datetime] = None
+        self._running: bool = False
         self._stats_lock = threading.Lock()
 
     @property
@@ -321,6 +322,7 @@ class ProcessMonitorCollector(BaseCollector):
 
     def start(self) -> None:
         """Start the ETW process monitoring session."""
+        self._running = True
         self._set_health(CollectorHealth.STARTING)
         self._stop_event.clear()
         self._etw = _EtwSessionAdapter(callback=self._on_etw_event)
@@ -394,6 +396,7 @@ class ProcessMonitorCollector(BaseCollector):
 
     def stop(self) -> None:
         """Stop the ETW session and release resources."""
+        self._running = False
         self._stop_event.set()
 
         if self._etw is not None:
