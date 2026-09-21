@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 const ApprovalQueue = ({ token }) => {
     const [approvals, setApprovals] = useState([]);
     const [loading, setLoading] = useState(true);
 
-    const fetchApprovals = async () => {
+    const fetchApprovals = useCallback(async () => {
         try {
             const res = await fetch('/api/v1/guardian/approvals', {
                 headers: { 'Authorization': `Bearer ${token}` }
@@ -18,11 +18,11 @@ const ApprovalQueue = ({ token }) => {
         } finally {
             setLoading(false);
         }
-    };
+    }, [token]);
 
     useEffect(() => {
         fetchApprovals();
-    }, [token]);
+    }, [fetchApprovals]);
 
     const handleAction = async (id, action) => {
         try {
