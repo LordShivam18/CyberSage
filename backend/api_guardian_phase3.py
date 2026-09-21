@@ -213,10 +213,13 @@ def create_approval_request(
         ttl_minutes=request.ttl_minutes,
     )
 
-    audit_event(
-        db, "guardian_approval_requested", "guardian_approval",
-        result["approval_id"], {"action_type": request.action_type}, user=user,
-    )
+    # Only emit the creation audit event for genuinely new requests.
+    # Idempotent replays must not generate a duplicate 'approval_requested' audit record.
+    if not result.get("existing"):
+        audit_event(
+            db, "guardian_approval_requested", "guardian_approval",
+            result["approval_id"], {"action_type": request.action_type}, user=user,
+        )
     db.commit()
 
     return result

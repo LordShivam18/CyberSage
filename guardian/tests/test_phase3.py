@@ -1045,7 +1045,14 @@ class TestAdversarial:
 
 
 class TestIdempotency:
-    """Test idempotency of actions and approvals."""
+    """Test idempotency of actions and approvals.
+
+    Contract:
+        First request  → 200, existing=False,  approval_id=X
+        Repeat request → 200, existing=True,   approval_id=X (same)
+    """
+
+    # ── Basic idempotency ─────────────────────────────────────────────
 
     def test_approval_request_idempotent(self, client, admin_user):
         """Same approval request twice should return existing."""
@@ -1062,7 +1069,314 @@ class TestIdempotency:
         assert r1.status_code == 200
         assert r2.status_code == 200
         assert r1.json()["approval_id"] == r2.json()["approval_id"]
+        # First response must advertise existing=False
+        assert r1.json().get("existing") is False
+        # Second response must advertise existing=True
         assert r2.json().get("existing") is True
+
+    def test_approval_request_idempotent_three_times(self, client, admin_user):
+        """Same approval request submitted three times — always returns same identity."""
+        _, token = admin_user
+        payload = {
+            "decision_id": "rd-idem-triple",
+            "requested_action": "block_destination",
+            "action_type": "network",
+            "target": {"destination_ip": "10.0.0.2", "destination_port": 4444},
+            "rationale": "Triple-submit idempotency test",
+        }
+        results = [
+            client.post("/api/v1/guardian/approvals", json=payload, headers=_auth_header(token))
+            for _ in range(3)
+        ]
+        approval_ids = [r.json()["approval_id"] for r in results]
+        assert all(s.status_code == 200 for s in results), "All submissions must return 200"
+        assert len(set(approval_ids)) == 1, "All submissions must return the same approval_id"
+        assert results[1].json().get("existing") is True
+        assert results[2].json().get("existing") is True
+
+        # Database: exactly one row
+        db = SessionLocal()
+        try:
+            from backend.models import GuardianApprovalRequest
+            count = db.query(GuardianApprovalRequest).filter(
+                GuardianApprovalRequest.approval_id == approval_ids[0]
+            ).count()
+            assert count == 1, f"Expected 1 DB row, found {count}"
+        finally:
+            db.close()
+
+    def test_idempotency_response_contains_decision_id(self, client, admin_user):
+        """First-creation response includes decision_id so clients can replay the request."""
+        _, token = admin_user
+        decision_id = "rd-idem-roundtrip"
+        payload = {
+            "decision_id": decision_id,
+            "requested_action": "terminate_process",
+            "action_type": "process",
+            "target": {"pid": 8888, "process_name": "bad.exe"},
+            "rationale": "Roundtrip test",
+        }
+        r1 = client.post("/api/v1/guardian/approvals", json=payload, headers=_auth_header(token))
+        assert r1.status_code == 200
+        assert r1.json().get("decision_id") == decision_id, (
+            "First-creation response must include decision_id so clients can reconstruct "
+            "an identical idempotency request"
+        )
+
+        # Use decision_id from first response (the gateway pattern)
+        payload2 = dict(payload, decision_id=r1.json()["decision_id"])
+        r2 = client.post("/api/v1/guardian/approvals", json=payload2, headers=_auth_header(token))
+        assert r2.status_code == 200
+        assert r2.json()["approval_id"] == r1.json()["approval_id"]
+        assert r2.json().get("existing") is True
+
+    # ── Post-decision idempotency ─────────────────────────────────────
+
+    def test_idempotent_after_approval(self, client, admin_user):
+        """Submitting same request after it has been approved still returns existing=True."""
+        _, token = admin_user
+        payload = {
+            "decision_id": "rd-idem-post-approved",
+            "requested_action": "terminate_process",
+            "action_type": "process",
+            "target": {"pid": 7777, "process_name": "test.exe"},
+            "rationale": "Test post-approval idempotency",
+        }
+        r1 = client.post("/api/v1/guardian/approvals", json=payload, headers=_auth_header(token))
+        approval_id = r1.json()["approval_id"]
+
+        # Approve
+        client.post(
+            f"/api/v1/guardian/approvals/{approval_id}/approve",
+            json={"notes": "CI"},
+            headers=_auth_header(token),
+        )
+
+        # Re-submit identical request
+        r2 = client.post("/api/v1/guardian/approvals", json=payload, headers=_auth_header(token))
+        assert r2.status_code == 200
+        assert r2.json()["approval_id"] == approval_id
+        assert r2.json().get("existing") is True
+
+    def test_idempotent_after_rejection(self, client, admin_user):
+        """Submitting same request after rejection still returns existing=True (no new row)."""
+        _, token = admin_user
+        payload = {
+            "decision_id": "rd-idem-post-rejected",
+            "requested_action": "block_destination",
+            "action_type": "network",
+            "target": {"destination_ip": "10.1.2.3", "destination_port": 9999},
+            "rationale": "Test post-rejection idempotency",
+        }
+        r1 = client.post("/api/v1/guardian/approvals", json=payload, headers=_auth_header(token))
+        approval_id = r1.json()["approval_id"]
+
+        # Reject
+        client.post(
+            f"/api/v1/guardian/approvals/{approval_id}/reject",
+            json={"notes": "CI rejection"},
+            headers=_auth_header(token),
+        )
+
+        # Re-submit identical request — must NOT create a new row
+        r2 = client.post("/api/v1/guardian/approvals", json=payload, headers=_auth_header(token))
+        assert r2.status_code == 200
+        assert r2.json()["approval_id"] == approval_id
+        assert r2.json().get("existing") is True
+
+        db = SessionLocal()
+        try:
+            from backend.models import GuardianApprovalRequest
+            count = db.query(GuardianApprovalRequest).filter(
+                GuardianApprovalRequest.approval_id == approval_id
+            ).count()
+            assert count == 1, "Rejection + re-submit must not create a second row"
+        finally:
+            db.close()
+
+    def test_idempotent_after_expiry(self, client, admin_user):
+        """Submitting same request after it expires still returns existing=True (no new row)."""
+        _, token = admin_user
+        manager = ApprovalManager()
+        db = SessionLocal()
+        try:
+            # Create with TTL=0 to expire immediately
+            result = manager.create_approval_request(
+                db,
+                incident_id=None,
+                decision_id="rd-idem-post-expired",
+                requested_action="terminate_process",
+                action_type="process",
+                target={"pid": 6666, "process_name": "expire.exe"},
+                rationale="Post-expiry idempotency",
+                ttl_minutes=0,
+            )
+            approval_id = result["approval_id"]
+            db.commit()
+
+            # Expire it
+            manager.check_expiry(db, approval_id)
+            db.commit()
+
+            # Re-submit via API — must still return same row (existing=True)
+            from backend.models import GuardianApprovalRequest
+            count_before = db.query(GuardianApprovalRequest).filter(
+                GuardianApprovalRequest.approval_id == approval_id
+            ).count()
+        finally:
+            db.close()
+
+        payload = {
+            "decision_id": "rd-idem-post-expired",
+            "requested_action": "terminate_process",
+            "action_type": "process",
+            "target": {"pid": 6666, "process_name": "expire.exe"},
+            "rationale": "Post-expiry idempotency",
+        }
+        r = client.post("/api/v1/guardian/approvals", json=payload, headers=_auth_header(token))
+        assert r.status_code == 200
+        assert r.json()["approval_id"] == approval_id
+        assert r.json().get("existing") is True
+
+        db2 = SessionLocal()
+        try:
+            from backend.models import GuardianApprovalRequest
+            count_after = db2.query(GuardianApprovalRequest).filter(
+                GuardianApprovalRequest.approval_id == approval_id
+            ).count()
+            assert count_after == 1, "Expiry + re-submit must not create a second row"
+        finally:
+            db2.close()
+
+    # ── Fingerprint isolation ─────────────────────────────────────────
+
+    def test_changed_action_type_produces_different_id(self):
+        """Changed action_type must NOT collide with the original fingerprint."""
+        id1 = compute_approval_id("process", {"pid": 1234}, "rd-iso-001")
+        id2 = compute_approval_id("network", {"pid": 1234}, "rd-iso-001")
+        assert id1 != id2, "Different action_type must produce different approval_id"
+
+    def test_changed_target_produces_different_id(self):
+        """Changed target must NOT collide with the original fingerprint."""
+        id1 = compute_approval_id("process", {"pid": 1234}, "rd-iso-002")
+        id2 = compute_approval_id("process", {"pid": 9999}, "rd-iso-002")
+        assert id1 != id2, "Different target must produce different approval_id"
+
+    def test_changed_incident_produces_different_id(self):
+        """Changed decision_id (different incident) must NOT collide."""
+        id1 = compute_approval_id("process", {"pid": 1234}, "rd-iso-003-incident-A")
+        id2 = compute_approval_id("process", {"pid": 1234}, "rd-iso-003-incident-B")
+        assert id1 != id2, "Different decision_id must produce different approval_id"
+
+    def test_modified_request_does_not_collide_with_original(self, client, admin_user):
+        """A request with a changed target must create a NEW approval row."""
+        _, token = admin_user
+        base_payload = {
+            "decision_id": "rd-iso-api",
+            "requested_action": "terminate_process",
+            "action_type": "process",
+            "target": {"pid": 1111, "process_name": "original.exe"},
+            "rationale": "Isolation test",
+        }
+        modified_payload = dict(base_payload, target={"pid": 2222, "process_name": "different.exe"})
+
+        r1 = client.post("/api/v1/guardian/approvals", json=base_payload, headers=_auth_header(token))
+        r2 = client.post("/api/v1/guardian/approvals", json=modified_payload, headers=_auth_header(token))
+
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r1.json()["approval_id"] != r2.json()["approval_id"], (
+            "Different targets must produce different approval rows"
+        )
+        # Neither is marked existing on first creation
+        assert r1.json().get("existing") is False
+        assert r2.json().get("existing") is False
+
+    # ── Audit deduplication ───────────────────────────────────────────
+
+    def test_duplicate_submission_does_not_create_duplicate_audit(self, client, admin_user):
+        """Idempotent re-submission must not create a second 'approval requested' audit record."""
+        from backend.models import AuditEvent
+        _, token = admin_user
+        payload = {
+            "decision_id": "rd-idem-audit",
+            "requested_action": "terminate_process",
+            "action_type": "process",
+            "target": {"pid": 4321, "process_name": "audit-test.exe"},
+            "rationale": "Audit dedup test",
+        }
+        r1 = client.post("/api/v1/guardian/approvals", json=payload, headers=_auth_header(token))
+        approval_id = r1.json()["approval_id"]
+
+        # Re-submit
+        client.post("/api/v1/guardian/approvals", json=payload, headers=_auth_header(token))
+
+        db = SessionLocal()
+        try:
+            count = db.query(AuditEvent).filter(
+                AuditEvent.target_id == approval_id,
+                AuditEvent.action == "guardian_approval_requested",
+            ).count()
+            assert count == 1, (
+                f"Expected 1 audit record for approval creation, got {count}. "
+                "Duplicate submissions must not create additional 'created' audit events."
+            )
+        finally:
+            db.close()
+
+    # ── Concurrent duplicate safety ───────────────────────────────────
+
+    def test_concurrent_duplicate_requests_produce_single_row(self, client, admin_user):
+        """Concurrent identical requests must not produce more than one DB row."""
+        import threading
+        _, token = admin_user
+        payload = {
+            "decision_id": "rd-idem-concurrent",
+            "requested_action": "block_destination",
+            "action_type": "network",
+            "target": {"destination_ip": "10.99.0.1", "destination_port": 8080},
+            "rationale": "Concurrency test",
+        }
+        responses = []
+        errors = []
+
+        def submit():
+            try:
+                r = client.post(
+                    "/api/v1/guardian/approvals",
+                    json=payload,
+                    headers=_auth_header(token),
+                )
+                responses.append(r)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=submit) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent requests raised exceptions: {errors}"
+        ok_responses = [r for r in responses if r.status_code == 200]
+        assert len(ok_responses) == 5, f"Expected 5 OK responses, got {len(ok_responses)}"
+
+        approval_ids = {r.json()["approval_id"] for r in ok_responses}
+        assert len(approval_ids) == 1, (
+            f"Concurrent requests must all return the same approval_id; got {approval_ids}"
+        )
+
+        db = SessionLocal()
+        try:
+            from backend.models import GuardianApprovalRequest
+            count = db.query(GuardianApprovalRequest).filter(
+                GuardianApprovalRequest.approval_id == list(approval_ids)[0]
+            ).count()
+            assert count == 1, f"Expected 1 DB row after concurrent requests, found {count}"
+        finally:
+            db.close()
+
+    # ── Deterministic ID functions ────────────────────────────────────
 
     def test_action_id_deterministic(self):
         """Same inputs produce same action ID."""
@@ -1079,6 +1393,63 @@ class TestIdempotency:
         id1 = compute_verification_id("act-001")
         id2 = compute_verification_id("act-001")
         assert id1 == id2
+
+    # ── Runtime gate regression ───────────────────────────────────────
+
+    def test_runtime_gate_idempotency_sequence(self, client, admin_user):
+        """Mirror the exact runtime release gate idempotency sequence.
+
+        This test prevents regression of the specific failure:
+            r_apv_dup.json().get("existing") is True
+
+        The gate pattern:
+            1. Create approval (decision_id is generated inline by caller)
+            2. Duplicate uses decision_id from first response
+            3. Assert existing=True on second response
+        """
+        import uuid
+        _, token = admin_user
+
+        # Step 1: create (decision_id embedded in call, not stored externally)
+        decision_id = f"runtime-gate-regression-{uuid.uuid4().hex[:8]}"
+        r1 = client.post(
+            "/api/v1/guardian/approvals",
+            json={
+                "decision_id": decision_id,
+                "requested_action": "terminate_process",
+                "action_type": "process",
+                "target": {"pid": 99999, "process_name": "ci-test"},
+                "rationale": "Runtime release gate validation",
+            },
+            headers=_auth_header(token),
+        )
+        assert r1.status_code == 200, f"Approval creation failed: {r1.status_code}"
+        assert "approval_id" in r1.json()
+        assert r1.json()["status"] == "pending"
+        assert "decision_id" in r1.json(), (
+            "First response must include decision_id so the gate can reconstruct the duplicate"
+        )
+
+        # Step 2: duplicate uses decision_id from first response (the gate pattern)
+        r2 = client.post(
+            "/api/v1/guardian/approvals",
+            json={
+                "decision_id": r1.json().get("decision_id", "x"),  # exactly as in the gate
+                "requested_action": "terminate_process",
+                "action_type": "process",
+                "target": {"pid": 99999, "process_name": "ci-test"},
+                "rationale": "Runtime release gate validation",
+            },
+            headers=_auth_header(token),
+        )
+        assert r2.status_code == 200, "Idempotent approval must return 200"
+        assert r2.json().get("existing") is True, (
+            "Guardian Phase 3: idempotent approval not detected — "
+            "r_apv_dup.json().get('existing') is not True"
+        )
+        assert r2.json()["approval_id"] == r1.json()["approval_id"], (
+            "Idempotent response must return the original approval_id"
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -127,9 +127,11 @@ class ApprovalManager:
 
         return {
             "approval_id": approval_id,
+            "decision_id": decision_id,
             "status": ApprovalStatus.PENDING,
             "expires_at": request.expires_at.isoformat(),
             "created_at": request.created_at.isoformat(),
+            "existing": False,
         }
 
     def approve_request(
