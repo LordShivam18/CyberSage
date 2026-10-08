@@ -1,4 +1,5 @@
 """Guardian v2 Phase 5 Slice 1 — versioned policy + dry-run simulation API.
+Slice 2 — safety-envelope execution + kill-switch persistence.
 
 Endpoints (all under /api/v1/guardian/automation/v5):
 
@@ -11,19 +12,26 @@ Endpoints (all under /api/v1/guardian/automation/v5):
     POST /simulate                        — dry-run simulation (analyst+)
     GET  /evaluations                     — simulation audit history (view roles)
 
-RBAC:
-    view (list/detail/evaluations): administrator, security_analyst,
-        incident_responder, read_only_auditor
-    create/modify/activate/disable: administrator ONLY — policy mutation is
-        the authorization root for future autonomous execution and must not
-        be reachable by lower-privilege roles (or by AI-facing paths).
-    simulate: administrator, security_analyst, incident_responder.
-        read_only_auditor is denied: simulation writes an audit record,
-        which is a state change auditors must not produce.
+Slice 2 additions:
 
-There is intentionally NO execute endpoint in Slice 1. Autonomous OS /
-network remediation is not enabled; simulations always report
-would_execute=False with blocked_reason slice1_simulation_only.
+    POST /executions                      — authorized envelope execution
+                                           (administrator + incident_responder)
+    GET  /executions                      — execution history (view roles)
+    GET  /executions/{execution_id}        — execution detail (view roles)
+    GET  /safety/status                   — merged safety state (view roles)
+    POST /safety/kill-switch              — activate kill switch (admin only)
+    DELETE /safety/kill-switch            — deactivate kill switch (admin only)
+
+RBAC:
+    view: administrator, security_analyst, incident_responder,
+        read_only_auditor
+    policy mutation + kill-switch mutation: administrator ONLY.
+    simulate: administrator, security_analyst, incident_responder.
+    execute: administrator, incident_responder ONLY — analysts approve,
+        responders/admins execute (mirrors Phase 3 execute permissions).
+
+Slice 2 executes ONLY approved-manual requests: a valid APPROVED approval
+is mandatory. Pre-authorized execution remains disabled.
 """
 
 from __future__ import annotations
@@ -58,6 +66,7 @@ phase5_limiter = RateLimiter(60)  # same budget as Phase 3 action endpoints
 
 VIEW_ROLES = (ROLE_ADMIN, ROLE_ANALYST, ROLE_RESPONDER, ROLE_AUDITOR)
 SIMULATE_ROLES = (ROLE_ADMIN, ROLE_ANALYST, ROLE_RESPONDER)
+EXECUTE_ROLES = (ROLE_ADMIN, ROLE_RESPONDER)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────
@@ -368,3 +377,220 @@ def list_evaluations(
         db, policy_id=policy_id, incident_id=incident_id, limit=limit, offset=offset
     )
     return {"total": total, "limit": limit, "offset": offset, "items": items}
+
+
+# ── Slice 2: authorized envelope execution ────────────────────────────
+
+class ExecutionIn(BaseModel):
+    policy_id: str = Field(..., max_length=128)
+    expected_policy_version: int = Field(..., ge=1)
+    action_type: str = Field(..., max_length=64)
+    action_name: str = Field(..., max_length=64)
+    target: Dict[str, Any] = Field(default_factory=dict)
+    decision_id: str = Field(..., max_length=128)
+    approval_id: str = Field(..., max_length=128)
+    risk_score: float = Field(..., ge=0.0, le=100.0)
+    incident_severity: str = Field(..., max_length=32)
+    incident_id: Optional[int] = None
+    event_ids: List[str] = Field(default_factory=list)
+    evaluation_id: Optional[str] = Field(None, max_length=128)
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    agent_key: Optional[str] = Field(None, max_length=128)
+    correlation_id: Optional[str] = Field(None, max_length=128)
+
+
+def _blocked_http_status(failed_gate: str) -> int:
+    if failed_gate in ("kill_switch_global", "kill_switch_scoped", "circuit_breaker"):
+        return 503
+    if failed_gate in ("rate_limit", "cooldown"):
+        return 429
+    return 422
+
+
+@router.post(
+    "/executions",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(*EXECUTE_ROLES)),
+    ],
+)
+def submit_execution(
+    body: ExecutionIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Run an approved-manual request through the safety envelope.
+
+    Requires a valid APPROVED approval (Slice 2 honors no pre-authorized
+    bypass). Idempotent: replaying an identical request returns the original
+    execution record without re-executing (existing=True).
+    """
+    from guardian.automation.envelope import EnvelopeRequest, SafetyEnvelope
+    from guardian.automation.policy_v5 import PolicyValidationError as _PVE
+
+    try:
+        request = EnvelopeRequest(
+            policy_id=body.policy_id,
+            expected_policy_version=body.expected_policy_version,
+            action_type=body.action_type,
+            action_name=body.action_name,
+            target=body.target,
+            decision_id=body.decision_id,
+            approval_id=body.approval_id,
+            risk_score=body.risk_score,
+            incident_severity=body.incident_severity,
+            incident_id=body.incident_id,
+            event_ids=list(body.event_ids or []),
+            evaluation_id=body.evaluation_id,
+            parameters=body.parameters,
+            agent_key=body.agent_key,
+            correlation_id=body.correlation_id,
+            requested_by=user.username,
+        )
+        result = SafetyEnvelope().run(db, request, actor=user.username)
+    except _PVE as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if result.status == "blocked":
+        failed = next((g for g in result.gates if not g.get("passed")), {})
+        raise HTTPException(
+            status_code=_blocked_http_status(failed.get("gate", "")),
+            detail={"execution_id": result.execution_id, "error": result.error,
+                    "gate": failed.get("gate"), "gates": result.gates},
+        )
+    response = result.to_dict()
+    audit_event(
+        db, f"guardian_envelope_submitted_{result.status}", "guardian_envelope",
+        result.execution_id, {"status": result.status, "actor": user.username}, user=user,
+    )
+    db.commit()
+    return response
+
+
+@router.get(
+    "/executions",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(*VIEW_ROLES)),
+    ],
+)
+def list_executions(
+    policy_id: Optional[str] = None,
+    incident_id: Optional[int] = None,
+    status: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    from guardian.automation.envelope import SafetyEnvelope
+
+    total, items = SafetyEnvelope().list_executions(
+        db, policy_id=policy_id, incident_id=incident_id, status=status,
+        limit=limit, offset=offset,
+    )
+    return {"total": total, "limit": limit, "offset": offset, "items": items}
+
+
+@router.get(
+    "/executions/{execution_id}",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(*VIEW_ROLES)),
+    ],
+)
+def get_execution(
+    execution_id: str,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    from guardian.automation.envelope import SafetyEnvelope
+
+    record = SafetyEnvelope().get_execution(db, execution_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    return record
+
+
+# ── Slice 2: persisted safety state ───────────────────────────────────
+
+class KillSwitchIn(BaseModel):
+    scope: str = Field(..., max_length=32)
+    switch_key: str = Field(..., max_length=128)
+    reason: str = Field("operator action", max_length=2048)
+
+
+@router.get(
+    "/safety/status",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(*VIEW_ROLES)),
+    ],
+)
+def safety_status(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """Merged safety state: kill switches (memory + persisted), breakers, limiter."""
+    from guardian.safety import kill_switch_store as _kss
+    from guardian.safety.kill_switch import get_default_kill_switch as _get_ks
+    from guardian.safety.registry import breaker_stats, limiter_stats
+
+    return {
+        "kill_switches": _kss.merged_state(db, _get_ks()),
+        "circuit_breakers": breaker_stats(),
+        "rate_limiter": limiter_stats(),
+        "execution_modes": ["simulation", "awaiting_approval", "approved_manual_execution"],
+    }
+
+
+@router.post(
+    "/safety/kill-switch",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(ROLE_ADMIN)),
+    ],
+)
+def activate_kill_switch_v5(
+    body: KillSwitchIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from guardian.safety import kill_switch_store as _kss
+    from guardian.safety.kill_switch import get_default_kill_switch as _get_ks
+
+    try:
+        result = _kss.activate_persisted(
+            db, _get_ks(), body.scope, body.switch_key, by=user.username, reason=body.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_event(
+        db, "guardian_kill_switch_activated", "guardian_kill_switch",
+        f"{body.scope}:{body.switch_key}", {"reason": body.reason}, user=user,
+    )
+    db.commit()
+    return {"status": "activated", **result}
+
+
+@router.delete(
+    "/safety/kill-switch",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(ROLE_ADMIN)),
+    ],
+)
+def deactivate_kill_switch_v5(
+    scope: str = Query(..., max_length=32),
+    switch_key: str = Query(..., max_length=128),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    from guardian.safety import kill_switch_store as _kss
+    from guardian.safety.kill_switch import get_default_kill_switch as _get_ks
+
+    try:
+        result = _kss.deactivate_persisted(db, _get_ks(), scope, switch_key, by=user.username)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_event(
+        db, "guardian_kill_switch_deactivated", "guardian_kill_switch",
+        f"{scope}:{switch_key}", {}, user=user,
+    )
+    db.commit()
+    return {"status": "deactivated", **result}

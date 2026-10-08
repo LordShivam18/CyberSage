@@ -779,3 +779,42 @@ class GuardianPolicyEvaluation(Base):
     requested_by = Column(String(255), nullable=False, default="system")
     correlation_id = Column(String(128), nullable=True)
     created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+
+
+# ---------------------------------------------------------------------------
+# Guardian v2 -- Phase 5 Slice 2 (additive)
+# ---------------------------------------------------------------------------
+# One immutable row per authorized execution attempt through the safety
+# envelope, including attempts blocked by safety gates. UNIQUE(execution_id)
+# is the final concurrency arbiter for idempotent execution.
+
+
+class GuardianEnvelopeRun(Base):
+    __tablename__ = "guardian_envelope_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    execution_id = Column(String(128), unique=True, nullable=False, index=True)
+    evaluation_id = Column(String(128), nullable=True)
+    policy_id = Column(String(128), nullable=False, index=True)
+    policy_version = Column(Integer, nullable=False)
+    rule_id = Column(String(128), nullable=True)
+    incident_id = Column(Integer, nullable=True, index=True)
+    event_ids = Column(JSONType, nullable=False, default=list)
+    decision_id = Column(String(128), nullable=False)
+    approval_id = Column(String(128), nullable=True)
+    action_id = Column(String(128), nullable=True)
+    actor = Column(String(255), nullable=False)
+    action_type = Column(String(64), nullable=False)
+    action_name = Column(String(128), nullable=False)
+    target = Column(JSONType, nullable=False, default=dict)
+    target_hash = Column(String(128), nullable=False, index=True)
+    parameters = Column(JSONType, nullable=False, default=dict)
+    status = Column(String(32), nullable=False, default="safety_check", index=True)
+    gate_results = Column(JSONType, nullable=False, default=list)
+    execution_result = Column(JSONType, nullable=True)
+    verification = Column(JSONType, nullable=True)
+    rollback = Column(JSONType, nullable=True)
+    error = Column(Text, nullable=True)
+    correlation_id = Column(String(128), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)

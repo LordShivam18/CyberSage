@@ -25,6 +25,8 @@ jobs:
       THREAT_INTEL_EXTERNAL_ENABLED: "false"
       RUNTIME_ANALYST_USERNAME: runtime-analyst
       RUNTIME_AUDITOR_USERNAME: runtime-auditor
+      RUNTIME_RESPONDER_USERNAME: runtime-responder
+      RUNTIME_ADMIN_USERNAME: runtime-admin
 
     steps:
       - name: Check out repository
@@ -60,6 +62,8 @@ jobs:
           jwt_secret="$(openssl rand -base64 48)"
           analyst_password="$(openssl rand -hex 24)"
           auditor_password="$(openssl rand -hex 24)"
+          responder_password="$(openssl rand -hex 24)"
+          admin_password="$(openssl rand -hex 24)"
           legacy_db="ndr_legacy_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
           artifact_dir="${RUNNER_TEMP}/runtime-release-artifacts"
 
@@ -67,6 +71,8 @@ jobs:
           echo "::add-mask::${jwt_secret}"
           echo "::add-mask::${analyst_password}"
           echo "::add-mask::${auditor_password}"
+          echo "::add-mask::${responder_password}"
+          echo "::add-mask::${admin_password}"
 
           mkdir -p "${artifact_dir}"
           {
@@ -74,6 +80,8 @@ jobs:
             echo "JWT_SECRET=${jwt_secret}"
             echo "RUNTIME_ANALYST_PASSWORD=${analyst_password}"
             echo "RUNTIME_AUDITOR_PASSWORD=${auditor_password}"
+            echo "RUNTIME_RESPONDER_PASSWORD=${responder_password}"
+            echo "RUNTIME_ADMIN_PASSWORD=${admin_password}"
             echo "LEGACY_DB=${legacy_db}"
             echo "RUNTIME_ARTIFACT_DIR=${artifact_dir}"
           } >> "${GITHUB_ENV}"
@@ -609,6 +617,14 @@ jobs:
             --username "${RUNTIME_AUDITOR_USERNAME}" \
             --password "${RUNTIME_AUDITOR_PASSWORD}" \
             --role read_only_auditor
+          docker compose exec -T backend-api python -m backend.cli create-user \
+            --username "${RUNTIME_RESPONDER_USERNAME}" \
+            --password "${RUNTIME_RESPONDER_PASSWORD}" \
+            --role incident_responder
+          docker compose exec -T backend-api python -m backend.cli create-user \
+            --username "${RUNTIME_ADMIN_USERNAME}" \
+            --password "${RUNTIME_ADMIN_PASSWORD}" \
+            --role administrator
 
       - name: Validate runtime authentication and WebSocket authorization
         shell: bash
@@ -792,6 +808,103 @@ jobs:
             -e "RUNTIME_AUDITOR_USERNAME=${RUNTIME_AUDITOR_USERNAME}" \
             -e "RUNTIME_AUDITOR_PASSWORD=${RUNTIME_AUDITOR_PASSWORD}" \
             backend-api python /tmp/runtime_release_gate.py guardian
+
+      - name: Validate Guardian Phase 3-5 schema (migrations 006-009)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose exec -T db psql --set=ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" <<'SQL'
+          DO $$
+          DECLARE
+            required_table TEXT;
+          BEGIN
+            -- Phase 3 (006): approval, action, verification, rollback, audit
+            FOREACH required_table IN ARRAY ARRAY[
+              'guardian_approval_requests', 'guardian_approvals',
+              'guardian_action_attempts', 'guardian_action_snapshots',
+              'guardian_action_verifications', 'guardian_action_rollbacks',
+              'guardian_action_audit'
+            ] LOOP
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = required_table
+              ) THEN
+                RAISE EXCEPTION 'Missing expected table %', required_table;
+              END IF;
+            END LOOP;
+
+            -- Phase 4 (007): automation policy, runs, collector health, kill switches
+            FOREACH required_table IN ARRAY ARRAY[
+              'guardian_automation_policies', 'guardian_automation_rules',
+              'guardian_automation_runs', 'guardian_collector_health',
+              'guardian_kill_switches'
+            ] LOOP
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = required_table
+              ) THEN
+                RAISE EXCEPTION 'Missing expected table %', required_table;
+              END IF;
+            END LOOP;
+
+            -- Phase 5 Slice 1 (008): lifecycle columns + evaluation audit
+            FOREACH required_table IN ARRAY ARRAY['guardian_policy_evaluations'] LOOP
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = required_table
+              ) THEN
+                RAISE EXCEPTION 'Missing expected table %', required_table;
+              END IF;
+            END LOOP;
+
+            -- Phase 5 Slice 2 (009): envelope execution audit
+            FOREACH required_table IN ARRAY ARRAY['guardian_envelope_runs'] LOOP
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = required_table
+              ) THEN
+                RAISE EXCEPTION 'Missing expected table %', required_table;
+              END IF;
+            END LOOP;
+
+            -- Key deterministic indexes across 006-009
+            FOREACH required_table IN ARRAY ARRAY[
+              'ix_guardian_approval_requests_approval_id',
+              'ix_guardian_action_attempts_action_id',
+              'ix_guardian_action_audit_audit_id',
+              'ix_guardian_automation_policies_policy_id',
+              'ix_guardian_automation_runs_run_id',
+              'ix_guardian_kill_switches_scope_key',
+              'ix_guardian_policy_evaluations_evaluation_id',
+              'ix_guardian_envelope_runs_execution_id'
+            ] LOOP
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = required_table
+              ) THEN
+                RAISE EXCEPTION 'Missing expected index %', required_table;
+              END IF;
+            END LOOP;
+
+            -- Migration tracking entries 006-009 (idempotent single rows)
+            FOREACH required_table IN ARRAY ARRAY[
+              '006_guardian_phase3', '007_guardian_phase4',
+              '008_guardian_phase5_slice1', '009_guardian_phase5_slice2'
+            ] LOOP
+              IF (SELECT COUNT(*) FROM schema_migrations WHERE revision = required_table) <> 1 THEN
+                RAISE EXCEPTION 'Migration tracking entry % is missing or duplicated', required_table;
+              END IF;
+            END LOOP;
+          END $$;
+          SQL
+
+      - name: Validate Guardian Phase 5 envelope
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose exec -T \
+            -e "RUNTIME_ANALYST_USERNAME=${RUNTIME_ANALYST_USERNAME}" \
+            -e "RUNTIME_ANALYST_PASSWORD=${RUNTIME_ANALYST_PASSWORD}" \
+            -e "RUNTIME_RESPONDER_USERNAME=${RUNTIME_RESPONDER_USERNAME}" \
+            -e "RUNTIME_RESPONDER_PASSWORD=${RUNTIME_RESPONDER_PASSWORD}" \
+            -e "RUNTIME_ADMIN_USERNAME=${RUNTIME_ADMIN_USERNAME}" \
+            -e "RUNTIME_ADMIN_PASSWORD=${RUNTIME_ADMIN_PASSWORD}" \
+            backend-api python /tmp/runtime_release_gate.py guardian-phase5
 
       - name: Run final release-gate checks
         shell: bash

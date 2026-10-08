@@ -174,5 +174,22 @@ def activate_kill_switch(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user)
 ) -> Dict[str, Any]:
-    # In a full implementation, we'd update the DB and notify the in-memory singleton.
-    return {"status": "activated", "scope": scope, "switch_key": switch_key}
+    """Activate a kill switch with memory + database write-through (Slice 2).
+
+    Previously a stub that reported success without persisting anything.
+    Now delegates to the shared kill-switch store so the in-memory
+    singleton and the persisted table cannot disagree.
+    """
+    from fastapi import HTTPException as _HTTPException
+
+    from guardian.safety import kill_switch_store as _kss
+    from guardian.safety.kill_switch import get_default_kill_switch as _get_ks
+
+    try:
+        result = _kss.activate_persisted(
+            db, _get_ks(), scope, switch_key, by=user.username, reason=reason,
+        )
+    except ValueError as exc:
+        raise _HTTPException(status_code=422, detail=str(exc))
+    db.commit()
+    return {"status": "activated", **result}

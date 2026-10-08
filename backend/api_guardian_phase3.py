@@ -433,6 +433,17 @@ def execute_action(
         db.commit()
         raise HTTPException(status_code=422, detail=f"Stale decision: {error_msg}")
 
+    # ── Slice 2 safety envelope: kill switch → circuit breaker → rate limit.
+    # Must pass before any action lookup, validation, or execution. When all
+    # gates pass, behavior below is unchanged.
+    from guardian.automation.envelope import pre_execution_safety, record_breaker_outcome
+
+    gates_ok, gate_status, gate_reason = pre_execution_safety(
+        db, action_type=attempt.action_type,
+    )
+    if not gates_ok:
+        raise HTTPException(status_code=gate_status, detail=gate_reason)
+
     # Get the registered action
     action = get_action(attempt.action_type, attempt.action_name)
     if not action:
@@ -549,6 +560,13 @@ def execute_action(
 
     attempt.updated_at = utcnow()
     db.commit()
+
+    # Slice 2: feed the verified outcome back into the circuit breaker so
+    # repeated failures trip the breaker for subsequent executions.
+    if exec_result.success and verification is not None:
+        record_breaker_outcome(attempt.action_type, verification.passed, action_id)
+    elif not exec_result.success:
+        record_breaker_outcome(attempt.action_type, False, action_id)
 
     # Create audit record
     audit_id = compute_audit_id(action_id)

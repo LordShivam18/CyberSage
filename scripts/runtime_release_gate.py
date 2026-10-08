@@ -680,11 +680,235 @@ def run_guardian_validation() -> None:
     print("PASS: Guardian Phase 1+2+3 validation (registration, heartbeat, ingestion, idempotency, PostgreSQL persistence, Phase 2 endpoints, Phase 3 approvals/actions/audit, security, v1.1 compat)")
 
 
+def run_guardian_phase5_validation() -> None:
+    """Validate Guardian Phase 5 Slice 2: policy lifecycle, simulation safety
+    precedence, envelope gating, kill-switch persistence, and RBAC.
+
+    Every execution-path assertion uses targets that fail CLOSED (loopback
+    destination, unknown policy) so this validation never mutates the runner
+    host: no firewall rule, process signal, or persistence change can occur.
+    """
+    analyst_username = os.environ["RUNTIME_ANALYST_USERNAME"]
+    analyst_password = os.environ["RUNTIME_ANALYST_PASSWORD"]
+    responder_username = os.environ["RUNTIME_RESPONDER_USERNAME"]
+    responder_password = os.environ["RUNTIME_RESPONDER_PASSWORD"]
+    admin_username = os.environ["RUNTIME_ADMIN_USERNAME"]
+    admin_password = os.environ["RUNTIME_ADMIN_PASSWORD"]
+
+    policy_id = f"runtime-phase5-{uuid.uuid4().hex[:8]}"
+    decision_id = f"runtime-phase5-dec-{uuid.uuid4().hex[:8]}"
+    target = {"destination_ip": "203.0.113.66", "destination_port": 443}
+
+    with httpx.Client(base_url=API_BASE_URL, timeout=15) as client:
+        admin_token = login(client, admin_username, admin_password)
+        analyst_token = login(client, analyst_username, analyst_password)
+        responder_token = login(client, responder_username, responder_password)
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+        analyst_headers = {"Authorization": f"Bearer {analyst_token}"}
+        responder_headers = {"Authorization": f"Bearer {responder_token}"}
+
+        # 1. Policy lifecycle (admin only).
+        created = client.post(
+            "/api/v1/guardian/automation/v5/policies",
+            headers=admin_headers,
+            json={
+                "policy_id": policy_id,
+                "name": "Runtime gate Phase 5 policy",
+                "description": "CI validation",
+                "mode": "approval_required",
+                "priority": 100,
+                "rules": [{
+                    "rule_id": "r-ci",
+                    "description": "CI rule",
+                    "action_type": "network",
+                    "action_name": "block_destination",
+                    "min_risk_score": 60.0,
+                    "max_risk_score": 100.0,
+                    "incident_severity": "high",
+                    "decision": "allow",
+                    "requires_approval": True,
+                    "target_scope": {"destination_ips": ["203.0.113.66"]},
+                }],
+            },
+        )
+        require(created.status_code == 200, "Phase 5: policy creation failed")
+        require(created.json().get("version") == 1, "Phase 5: policy not v1")
+
+        analyst_create = client.post(
+            "/api/v1/guardian/automation/v5/policies",
+            headers=analyst_headers,
+            json={"policy_id": f"{policy_id}-analyst", "name": "x", "description": "x"},
+        )
+        require(analyst_create.status_code == 403, "Phase 5: analyst policy creation not denied")
+
+        # 2. Simulation answers without executing.
+        simulated = client.post(
+            "/api/v1/guardian/automation/v5/simulate",
+            headers=analyst_headers,
+            json={
+                "action_type": "network",
+                "action_name": "block_destination",
+                "target": target,
+                "risk_score": 75.0,
+                "incident_severity": "high",
+                "correlation_id": f"runtime-phase5-{uuid.uuid4().hex[:8]}",
+            },
+        )
+        require(simulated.status_code == 200, "Phase 5: simulation failed")
+        sim_body = simulated.json()
+        require(sim_body.get("matched_policy_id") == policy_id, "Phase 5: simulation matched wrong policy")
+        require(sim_body.get("would_execute") is False, "Phase 5: simulation claims execution")
+
+        # 3. Approval, then analyst execution attempt (must be denied by RBAC).
+        approval = client.post(
+            "/api/v1/guardian/approvals",
+            headers=analyst_headers,
+            json={
+                "decision_id": decision_id,
+                "requested_action": "block_destination",
+                "action_type": "network",
+                "target": target,
+                "rationale": "Runtime release gate validation",
+            },
+        )
+        require(approval.status_code == 200, "Phase 5: approval creation failed")
+        approval_id = approval.json()["approval_id"]
+        approved = client.post(
+            f"/api/v1/guardian/approvals/{approval_id}/approve",
+            headers=analyst_headers,
+            json={"notes": "CI validation"},
+        )
+        require(approved.status_code == 200, "Phase 5: approval failed")
+
+        execution_body = {
+            "policy_id": policy_id,
+            "expected_policy_version": 1,
+            "action_type": "network",
+            "action_name": "block_destination",
+            "target": target,
+            "decision_id": decision_id,
+            "approval_id": approval_id,
+            "risk_score": 75.0,
+            "incident_severity": "high",
+        }
+        analyst_exec = client.post(
+            "/api/v1/guardian/automation/v5/executions",
+            headers=analyst_headers,
+            json=execution_body,
+        )
+        require(analyst_exec.status_code == 403, "Phase 5: analyst execution not denied")
+
+        # 4. Envelope gating with a fail-closed target (loopback is rejected
+        # by action validation, so the runner host cannot be touched).
+        loopback_approval = client.post(
+            "/api/v1/guardian/approvals",
+            headers=analyst_headers,
+            json={
+                "decision_id": f"{decision_id}-loopback",
+                "requested_action": "block_destination",
+                "action_type": "network",
+                "target": {"destination_ip": "127.0.0.1"},
+                "rationale": "Runtime release gate validation",
+            },
+        )
+        require(loopback_approval.status_code == 200, "Phase 5: loopback approval failed")
+        loopback_approval_id = loopback_approval.json()["approval_id"]
+        client.post(
+            f"/api/v1/guardian/approvals/{loopback_approval_id}/approve",
+            headers=analyst_headers,
+            json={"notes": "CI validation"},
+        )
+        gated = client.post(
+            "/api/v1/guardian/automation/v5/executions",
+            headers=responder_headers,
+            json={
+                "policy_id": policy_id,
+                "expected_policy_version": 1,
+                "action_type": "network",
+                "action_name": "block_destination",
+                "target": {"destination_ip": "127.0.0.1"},
+                "decision_id": f"{decision_id}-loopback",
+                "approval_id": loopback_approval_id,
+                "risk_score": 75.0,
+                "incident_severity": "high",
+            },
+        )
+        require(gated.status_code == 422, "Phase 5: loopback execution not blocked")
+        require(
+            gated.json().get("detail", {}).get("gate") == "target_validation",
+            "Phase 5: loopback blocked at the wrong gate",
+        )
+
+        # 5. Kill switch precedence: activate -> simulate denied -> deactivate.
+        ks_on = client.post(
+            "/api/v1/guardian/automation/v5/safety/kill-switch",
+            headers=admin_headers,
+            json={"scope": "global", "switch_key": "global", "reason": "Runtime gate validation"},
+        )
+        require(ks_on.status_code == 200, "Phase 5: kill-switch activation failed")
+        ks_sim = client.post(
+            "/api/v1/guardian/automation/v5/simulate",
+            headers=analyst_headers,
+            json={
+                "action_type": "network",
+                "action_name": "block_destination",
+                "target": target,
+                "risk_score": 75.0,
+                "incident_severity": "high",
+                "correlation_id": f"runtime-phase5-ks-{uuid.uuid4().hex[:8]}",
+            },
+        )
+        require(ks_sim.status_code == 200, "Phase 5: kill-switch simulation failed")
+        require(ks_sim.json().get("reason") == "kill_switch_active",
+                "Phase 5: kill switch did not dominate simulation")
+        ks_exec = client.post(
+            "/api/v1/guardian/automation/v5/executions",
+            headers=responder_headers,
+            json=execution_body,
+        )
+        require(ks_exec.status_code == 503, "Phase 5: kill-switch execution not refused")
+        ks_off = client.request(
+            "DELETE",
+            "/api/v1/guardian/automation/v5/safety/kill-switch",
+            headers=admin_headers,
+            params={"scope": "global", "switch_key": "global"},
+        )
+        require(ks_off.status_code == 200, "Phase 5: kill-switch deactivation failed")
+
+        # Analysts cannot touch the kill switch.
+        ks_analyst = client.post(
+            "/api/v1/guardian/automation/v5/safety/kill-switch",
+            headers=analyst_headers,
+            json={"scope": "global", "switch_key": "global"},
+        )
+        require(ks_analyst.status_code == 403, "Phase 5: analyst kill-switch write not denied")
+
+        # 6. Read paths (auditor-safe shapes are covered by unit RBAC tests;
+        # here we verify the endpoints exist and are well-formed).
+        status = client.get(
+            "/api/v1/guardian/automation/v5/safety/status", headers=analyst_headers
+        )
+        require(status.status_code == 200, "Phase 5: safety status failed")
+        require("kill_switches" in status.json(), "Phase 5: safety status shape invalid")
+        runs = client.get(
+            "/api/v1/guardian/automation/v5/executions", headers=analyst_headers
+        )
+        require(runs.status_code == 200, "Phase 5: executions listing failed")
+        require("total" in runs.json(), "Phase 5: executions listing shape invalid")
+        evals = client.get(
+            "/api/v1/guardian/automation/v5/evaluations", headers=analyst_headers
+        )
+        require(evals.status_code == 200, "Phase 5: evaluations listing failed")
+
+    print("PASS: Guardian Phase 5 Slice 2 validation (policy lifecycle, simulation, envelope gating, kill switch, RBAC)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Runtime release gate assertions")
     parser.add_argument(
         "mode",
-        choices=("auth-ws", "kafka", "fixtures", "dead-letter", "ready", "guardian"),
+        choices=("auth-ws", "kafka", "fixtures", "dead-letter", "ready", "guardian",
+                 "guardian-phase5"),
         help="Validation stage to execute",
     )
     parser.add_argument("--event-id", help="Unique Kafka event identifier")
@@ -702,6 +926,8 @@ def main() -> None:
         run_dead_letter_validation(args.event_id)
     elif args.mode == "guardian":
         run_guardian_validation()
+    elif args.mode == "guardian-phase5":
+        run_guardian_phase5_validation()
     else:
         run_readiness_validation()
 
