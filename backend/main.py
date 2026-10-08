@@ -52,6 +52,7 @@ from .api_guardian import router as guardian_router
 from .api_guardian_phase2 import router as guardian_phase2_router
 from .api_guardian_phase3 import router as guardian_phase3_router
 from .api_guardian_phase4 import router as guardian_phase4_router
+from .api_guardian_phase5 import router as guardian_phase5_router
 
 
 @asynccontextmanager
@@ -75,6 +76,7 @@ app.include_router(guardian_router)
 app.include_router(guardian_phase2_router)
 app.include_router(guardian_phase3_router)
 app.include_router(guardian_phase4_router)
+app.include_router(guardian_phase5_router)
 
 ALERT_STATUSES = {"new", "acknowledged", "investigating", "resolved", "false_positive"}
 INCIDENT_STATUSES = {"new", "triaged", "investigating", "contained", "resolved", "false_positive"}

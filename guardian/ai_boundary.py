@@ -54,7 +54,35 @@ _DANGEROUS_PATTERNS = [
     re.compile(r"__import__\s*\(", re.IGNORECASE),
     re.compile(r"import\s+os\b", re.IGNORECASE),
     re.compile(r"import\s+subprocess\b", re.IGNORECASE),
+    # Phase 5 Slice 1 additions: remedial-tooling / shell-escape indicators.
+    # Still heuristics — defense in depth only.
+    re.compile(r"\bpowershell\b", re.IGNORECASE),
+    re.compile(r"\bcmd\.exe\b", re.IGNORECASE),
+    re.compile(r"\bnetsh\b", re.IGNORECASE),
+    re.compile(r"\biptables\b", re.IGNORECASE),
+    re.compile(r"\bschtasks\b", re.IGNORECASE),
+    re.compile(r"\btaskkill\b", re.IGNORECASE),
+    re.compile(r"\brm\s+-rf?\b", re.IGNORECASE),
+    re.compile(r"\bchmod\s+\+x\b", re.IGNORECASE),
+    re.compile(r"curl\s+.*\|\s*(ba)?sh", re.IGNORECASE),
+    re.compile(r"wget\s+.*\|\s*(ba)?sh", re.IGNORECASE),
+    re.compile(r"\breg\s+(add|delete|import)\b", re.IGNORECASE),
+    re.compile(r"\bmimikatz\b", re.IGNORECASE),
 ]
+
+# Structural keys that must never appear in AI advisory output. AI output is
+# data-only; these keys would indicate an attempt to cross into execution,
+# authorization, or policy control.
+_FORBIDDEN_ADVISORY_KEYS = frozenset({
+    "execute", "shell", "command", "command_line", "script",
+    "policy", "policy_id", "approval", "approval_id", "approve",
+    "kill_switch", "killswitch", "rate_limit", "rate_limiter",
+    "circuit_breaker", "allowlist", "rbac", "role", "token", "password",
+})
+
+# Advisory allowlist: the only keys an AI-sourced suggested action may carry.
+# Values are further validated against the registered action allowlist.
+_ALLOWED_ADVISORY_ACTION_KEYS = frozenset({"action_type", "action_name", "target"})
 
 
 class AiBoundaryViolation(Exception):
@@ -99,6 +127,37 @@ class AiBoundaryValidator:
         is_safe, reason = self.validate_suggestion(suggestion, context)
         if not is_safe:
             raise AiBoundaryViolation(reason)
+
+    def validate_structure(self, suggestion: Any, context: str = "") -> Tuple[bool, Optional[str]]:
+        """Validate that a dict-shaped suggestion carries no control keys.
+
+        Rejects any mapping containing keys outside the advisory allowlist or
+        any forbidden control key at any nesting level (one level deep for
+        the ``target`` sub-object keys ``pid``/``destination_ip`` etc. are
+        permitted — only control-plane keys are forbidden).
+        """
+        if not isinstance(suggestion, dict):
+            return True, None
+        for key in suggestion.keys():
+            if not isinstance(key, str):
+                return False, f"Non-string key in AI suggestion ({context or 'unknown'})"
+            if key.lower() in _FORBIDDEN_ADVISORY_KEYS:
+                reason = f"AI suggestion contains forbidden control key: {key}"
+                logger.warning("AiBoundaryValidator: VIOLATION in %s — %s", context or "unknown", reason)
+                return False, reason
+        action = suggestion.get("suggested_action")
+        if isinstance(action, dict):
+            extra = set(action.keys()) - _ALLOWED_ADVISORY_ACTION_KEYS
+            if extra:
+                reason = f"AI suggested_action carries non-advisory keys: {sorted(extra)}"
+                logger.warning("AiBoundaryValidator: VIOLATION in %s — %s", context or "unknown", reason)
+                return False, reason
+            for key in action.keys():
+                if isinstance(key, str) and key.lower() in _FORBIDDEN_ADVISORY_KEYS:
+                    reason = f"AI suggested_action contains forbidden control key: {key}"
+                    logger.warning("AiBoundaryValidator: VIOLATION in %s — %s", context or "unknown", reason)
+                    return False, reason
+        return True, None
 
 
 class AiAdvisory:
@@ -157,3 +216,88 @@ def assert_ai_cannot_execute(ai_output: Any) -> None:
     validator = AiBoundaryValidator()
     is_safe, reason = validator.validate_suggestion(ai_output, "assert_ai_cannot_execute")
     assert is_safe, f"AI boundary violation: {reason}"
+    struct_safe, struct_reason = validator.validate_structure(ai_output, "assert_ai_cannot_execute")
+    assert struct_safe, f"AI boundary structural violation: {struct_reason}"
+
+
+def constrain_ai_advisory(suggestion: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert untrusted AI output into a constrained advisory structure.
+
+    Allowlist behavior (fail closed):
+      - input must be a dict; anything else raises AiBoundaryViolation.
+      - text/pattern scan via AiBoundaryValidator (raises on executable
+        content); structural scan rejects control-plane keys.
+      - ``suggested_action`` (if present) must contain ONLY action_type,
+        action_name, and target; action_type/action_name must be registered
+        in the action registry (or "*"); target must be a dict whose values
+        are scalars (no nested commands).
+      - confidence is clamped to [0, 1]; unknown fields are dropped, never
+        passed through.
+
+    The returned advisory is presentation-only and can never authorize,
+    approve, or trigger execution.
+    """
+    if not isinstance(suggestion, dict):
+        raise AiBoundaryViolation("AI advisory must be a dict")
+    validator = AiBoundaryValidator()
+    validator.assert_safe(suggestion, "constrain_ai_advisory")
+    struct_safe, struct_reason = validator.validate_structure(suggestion, "constrain_ai_advisory")
+    if not struct_safe:
+        raise AiBoundaryViolation(struct_reason or "structural violation")
+
+    summary = suggestion.get("summary", "")
+    if not isinstance(summary, str):
+        raise AiBoundaryViolation("AI advisory summary must be text")
+    explanation = suggestion.get("explanation")
+    if explanation is not None and not isinstance(explanation, str):
+        raise AiBoundaryViolation("AI advisory explanation must be text")
+
+    constrained_action = None
+    raw_action = suggestion.get("suggested_action")
+    if raw_action is not None:
+        if not isinstance(raw_action, dict):
+            raise AiBoundaryViolation("AI suggested_action must be an object")
+        action_type = raw_action.get("action_type")
+        action_name = raw_action.get("action_name")
+        target = raw_action.get("target", {})
+        if not isinstance(action_type, str) or not isinstance(action_name, str):
+            raise AiBoundaryViolation("AI suggested_action needs string action_type/action_name")
+        if not isinstance(target, dict):
+            raise AiBoundaryViolation("AI suggested_action target must be an object")
+        # Registry allowlist check — AI cannot invent action types.
+        from guardian.actions import registry as action_registry
+
+        known = {(a["action_type"], a["action_name"]) for a in action_registry.list_actions()}
+        if action_type != "*" and action_name != "*" and (action_type, action_name) not in known:
+            raise AiBoundaryViolation(
+                f"AI suggested unknown action '{action_type}:{action_name}'"
+            )
+        # Target values must be scalars — no nested executable structures.
+        for key, value in target.items():
+            if isinstance(value, (dict, list)) and key not in (
+                "event_ids", "evidence_ids",
+            ):
+                raise AiBoundaryViolation(
+                    f"AI suggested_action target field '{key}' must be a scalar"
+                )
+            if callable(value):
+                raise AiBoundaryViolation("AI target values must not be callable")
+        constrained_action = {
+            "action_type": action_type,
+            "action_name": action_name,
+            "target": {k: v for k, v in target.items() if not callable(v)},
+        }
+
+    try:
+        confidence = float(suggestion.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        raise AiBoundaryViolation("AI confidence must be numeric")
+    confidence = max(0.0, min(1.0, confidence))
+
+    return {
+        "summary": summary,
+        "suggested_action": constrained_action,
+        "explanation": explanation if isinstance(explanation, str) else None,
+        "confidence": confidence,
+        "_boundary": "AI advisory only — requires operator approval before any action",
+    }

@@ -645,3 +645,137 @@ class GuardianActionAudit(Base):
     status = Column(String(32), nullable=False, default="planned", index=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+
+
+# ---------------------------------------------------------------------------
+# Guardian v2 -- Phase 4 (additive, Slice 1 wiring)
+# ---------------------------------------------------------------------------
+# Mirrors backend/migrations/versions/guardian_phase4_007.py.
+# Registered here so test/development databases created via
+# Base.metadata.create_all() include the same tables the migration creates.
+
+
+class GuardianAutomationPolicy(Base):
+    __tablename__ = "guardian_automation_policies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    policy_id = Column(String(128), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    mode = Column(String(64), nullable=False, default="approval_required")
+    enabled = Column(Boolean, nullable=False, default=True)
+    version = Column(Integer, nullable=False, default=1)
+    priority = Column(Integer, nullable=False, default=100)
+    expires_at = Column(DateTime, nullable=True)
+    updated_by = Column(String(255), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class GuardianAutomationRule(Base):
+    __tablename__ = "guardian_automation_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    policy_id = Column(String(128), nullable=False, index=True)
+    rule_id = Column(String(128), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=False, default="")
+    action_type = Column(String(64), nullable=False)
+    action_name = Column(String(64), nullable=False)
+    min_risk_score = Column(Float, nullable=False, default=0.0)
+    max_risk_score = Column(Float, nullable=False, default=100.0)
+    incident_severity = Column(String(64), nullable=True)
+    decision = Column(String(64), nullable=False, default="require_approval")
+    requires_approval = Column(Boolean, nullable=False, default=True)
+    priority = Column(Integer, nullable=False, default=100)
+    target_scope = Column(JSONType, nullable=True)
+    approval_mode = Column(String(32), nullable=False, default="required")
+    max_executions_per_hour = Column(Integer, nullable=True)
+    cooldown_seconds = Column(Integer, nullable=True)
+
+
+class GuardianAutomationRun(Base):
+    __tablename__ = "guardian_automation_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(128), unique=True, nullable=False, index=True)
+    policy_id = Column(String(128), nullable=True)
+    action_type = Column(String(64), nullable=False)
+    action_name = Column(String(128), nullable=False)
+    target = Column(JSONType, nullable=False, default=dict)
+    incident_id = Column(Integer, nullable=True)
+    decision_id = Column(String(128), nullable=False)
+    risk_score = Column(Float, nullable=False, default=0.0)
+    incident_severity = Column(String(64), nullable=False)
+    requested_by = Column(String(255), nullable=False)
+    rationale = Column(Text, nullable=False, default="")
+    status = Column(String(64), nullable=False, index=True)
+    policy_decision = Column(String(64), nullable=False)
+    requires_approval = Column(Boolean, nullable=False, default=True)
+    approval_id = Column(String(128), nullable=True)
+    parameters = Column(JSONType, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+    error = Column(Text, nullable=True)
+    result = Column(JSONType, nullable=True)
+
+
+class GuardianCollectorHealth(Base):
+    __tablename__ = "guardian_collector_health"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_id = Column(String(128), nullable=False)
+    collector_type = Column(String(128), nullable=False)
+    health_state = Column(String(64), nullable=False)
+    last_event_at = Column(DateTime, nullable=True)
+    events_received = Column(Integer, nullable=False, default=0)
+    events_dropped = Column(Integer, nullable=False, default=0)
+    reconnect_count = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class GuardianKillSwitch(Base):
+    __tablename__ = "guardian_kill_switches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope = Column(String(64), nullable=False)
+    switch_key = Column(String(128), nullable=False)
+    active = Column(Boolean, nullable=False, default=False)
+    activated_at = Column(DateTime, nullable=True)
+    activated_by = Column(String(255), nullable=True)
+    reason = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Guardian v2 -- Phase 5 Slice 1 (additive)
+# ---------------------------------------------------------------------------
+# Immutable audit trail for deterministic policy evaluations and dry-run
+# simulations. Simulation rows are explicitly-designed simulation artifacts:
+# they never represent real execution and never mutate OS / network /
+# approval / production action state.
+
+
+class GuardianPolicyEvaluation(Base):
+    __tablename__ = "guardian_policy_evaluations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    evaluation_id = Column(String(128), unique=True, nullable=False, index=True)
+    policy_id = Column(String(128), nullable=True, index=True)
+    policy_version = Column(Integer, nullable=True)
+    matched_rule_id = Column(String(128), nullable=True)
+    incident_id = Column(Integer, nullable=True, index=True)
+    event_ids = Column(JSONType, nullable=False, default=list)
+    risk_score = Column(Float, nullable=True)
+    incident_severity = Column(String(64), nullable=True)
+    action_type = Column(String(64), nullable=False)
+    action_name = Column(String(128), nullable=False)
+    target = Column(JSONType, nullable=False, default=dict)
+    decision = Column(String(64), nullable=False)
+    reason = Column(Text, nullable=True)
+    approval_mode = Column(String(32), nullable=False, default="required")
+    would_execute = Column(Boolean, nullable=False, default=False)
+    blocked_reason = Column(Text, nullable=True)
+    safety_checks = Column(JSONType, nullable=False, default=list)
+    requested_by = Column(String(255), nullable=False, default="system")
+    correlation_id = Column(String(128), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
