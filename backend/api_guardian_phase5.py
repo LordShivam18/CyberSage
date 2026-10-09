@@ -1,5 +1,6 @@
 """Guardian v2 Phase 5 Slice 1 — versioned policy + dry-run simulation API.
 Slice 2 — safety-envelope execution + kill-switch persistence.
+Slice 3 — deterministic conflict/overlap insight (read-only).
 
 Endpoints (all under /api/v1/guardian/automation/v5):
 
@@ -11,6 +12,8 @@ Endpoints (all under /api/v1/guardian/automation/v5):
     POST /policies/{policy_id}/enable     — re-enable policy (admin only)
     POST /simulate                        — dry-run simulation (analyst+)
     GET  /evaluations                     — simulation audit history (view roles)
+    GET  /conflicts                       — deterministic overlap/conflict
+                                            insight (view roles, read-only)
 
 Slice 2 additions:
 
@@ -594,3 +597,54 @@ def deactivate_kill_switch_v5(
     )
     db.commit()
     return {"status": "deactivated", **result}
+
+
+# ── Slice 3: deterministic conflict/overlap insight (read-only) ───────
+
+@router.get(
+    "/conflicts",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(*VIEW_ROLES)),
+    ],
+)
+def list_conflicts(
+    policy_id: Optional[str] = Query(None, max_length=128),
+    include_disabled: bool = Query(True),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Deterministic overlap/conflict insight over real persisted policies.
+
+    Read-only: performs no mutation, creates no approvals, consumes no
+    quota, touches no kill switch. Guidance only — never overrides the
+    deterministic policy engine. A pair is a conflict only when match
+    conditions overlap AND outcomes are incompatible (DENY vs non-DENY).
+    """
+    from guardian.automation.conflicts import analyze_policy_conflicts
+
+    policies = policy_store.list_policies(db, include_disabled=include_disabled)
+    if policy_id:
+        selected = [p for p in policies if p.policy_id == policy_id]
+        if not selected:
+            raise HTTPException(status_code=404, detail="Policy not found")
+        # Compare the selected policy against the full set so
+        # cross-policy overlaps remain visible.
+        findings = analyze_policy_conflicts(policies)
+        findings = [
+            f for f in findings
+            if any(r.get("policy_id") == policy_id for r in f.get("rules", []))
+        ]
+    else:
+        findings = analyze_policy_conflicts(policies)
+    db.rollback()  # guarantee read-only semantics even on pooled sessions
+    conflicts = [f for f in findings if f.get("is_conflict")]
+    return {
+        "total": len(findings),
+        "conflicts": len(conflicts),
+        "notices": len(findings) - len(conflicts),
+        "items": findings,
+        "note": (
+            "Guidance only — conflict visualization never overrides "
+            "the deterministic policy engine."
+        ),
+    }

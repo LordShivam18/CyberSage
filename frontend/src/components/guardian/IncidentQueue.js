@@ -1,125 +1,82 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { listNdrIncidents, normalizePage } from './guardianApi';
+import { formatTimestamp, severityStyle, sharedStyles as s } from './formatters';
 
 const IncidentQueue = ({ token }) => {
-    const [incidents, setIncidents] = useState([]);
+    const [page, setPage] = useState({ total: 0, items: [] });
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    const load = useCallback(async () => {
+        if (!token) {
+            setLoading(false);
+            return;
+        }
+        setLoading(true);
+        setError('');
+        try {
+            // NDR incidents endpoint is unauthenticated for reads in this app,
+            // but we pass the token when present for consistency.
+            const data = await listNdrIncidents(token, { limit: 50 });
+            setPage(normalizePage(data));
+        } catch (err) {
+            setError(err.message || 'Failed to fetch incidents.');
+        } finally {
+            setLoading(false);
+        }
+    }, [token]);
 
     useEffect(() => {
-        const fetchIncidents = async () => {
-            try {
-                const res = await fetch('/api/v1/incidents', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    setIncidents(data);
-                }
-            } catch (err) {
-                console.error("Failed to fetch incidents", err);
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchIncidents();
-    }, [token]);
+        load();
+    }, [load]);
+
+    if (!token) return <div style={s.empty}>Sign in to view the incident queue.</div>;
 
     return (
         <div>
-            <h2 style={styles.title}>Incident Queue</h2>
-            <div style={styles.tableContainer}>
-                <table style={styles.table}>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '16px' }}>
+                <h2 style={{ ...s.title, margin: 0 }}>Incident Queue</h2>
+                <span style={s.muted}>{page.total} total</span>
+                <span style={{ flex: 1 }} />
+                <button style={s.btn} onClick={load} aria-label="Reload incidents">Reload</button>
+            </div>
+            {error && <div style={s.error} role="alert">{error}</div>}
+            <div style={s.tableWrap}>
+                <table style={s.table}>
                     <thead>
                         <tr>
-                            <th style={styles.th}>ID</th>
-                            <th style={styles.th}>Title</th>
-                            <th style={styles.th}>Severity</th>
-                            <th style={styles.th}>Status</th>
-                            <th style={styles.th}>Created</th>
+                            <th style={s.th}>ID</th>
+                            <th style={s.th}>Title</th>
+                            <th style={s.th}>Severity</th>
+                            <th style={s.th}>Status</th>
+                            <th style={s.th}>Last seen</th>
                         </tr>
                     </thead>
                     <tbody>
                         {loading ? (
-                            <tr><td colSpan="5" style={styles.empty}>Loading...</td></tr>
-                        ) : incidents.length > 0 ? (
-                            incidents.map((inc) => (
-                                <tr key={inc.id} style={styles.tr}>
-                                    <td style={styles.td}>INC-{inc.id}</td>
-                                    <td style={styles.td}>{inc.title}</td>
-                                    <td style={styles.td}>
-                                        <span style={{...styles.badge, ...getSeverityStyle(inc.severity)}}>
-                                            {inc.severity}
+                            <tr><td colSpan="5" style={s.empty}>Loading…</td></tr>
+                        ) : (page.items || []).length > 0 ? (
+                            (page.items || []).map((inc) => (
+                                <tr key={inc.id}>
+                                    <td style={s.td}>INC-{inc.id}</td>
+                                    <td style={s.td}>{inc.title}</td>
+                                    <td style={s.td}>
+                                        <span style={{ ...s.badge, ...severityStyle(inc.severity) }}>
+                                            {inc.severity || 'unknown'}
                                         </span>
                                     </td>
-                                    <td style={styles.td}>{inc.status}</td>
-                                    <td style={styles.td}>{new Date(inc.created_at).toLocaleString()}</td>
+                                    <td style={s.td}>{inc.status}</td>
+                                    <td style={s.td}>{formatTimestamp(inc.last_seen || inc.created_at)}</td>
                                 </tr>
                             ))
                         ) : (
-                            <tr><td colSpan="5" style={styles.empty}>No active incidents.</td></tr>
+                            <tr><td colSpan="5" style={s.empty}>No active incidents.</td></tr>
                         )}
                     </tbody>
                 </table>
             </div>
         </div>
     );
-};
-
-const getSeverityStyle = (severity) => {
-    switch(severity?.toLowerCase()) {
-        case 'critical': return { color: '#F85149', backgroundColor: 'rgba(248,81,73,0.15)' };
-        case 'high': return { color: '#D29922', backgroundColor: 'rgba(210,153,34,0.15)' };
-        case 'medium': return { color: '#8250DF', backgroundColor: 'rgba(130,80,223,0.15)' };
-        default: return { color: '#3FB950', backgroundColor: 'rgba(46,160,67,0.15)' };
-    }
-}
-
-const styles = {
-    title: {
-        fontSize: '24px',
-        fontWeight: 'bold',
-        marginBottom: '24px',
-        color: '#E0E6ED',
-    },
-    tableContainer: {
-        backgroundColor: '#1E232E',
-        borderRadius: '8px',
-        border: '1px solid #2A303C',
-        overflow: 'hidden',
-    },
-    table: {
-        width: '100%',
-        borderCollapse: 'collapse',
-    },
-    th: {
-        padding: '16px',
-        textAlign: 'left',
-        color: '#8B949E',
-        fontSize: '14px',
-        fontWeight: '600',
-        borderBottom: '1px solid #2A303C',
-        backgroundColor: '#161B22',
-    },
-    tr: {
-        borderBottom: '1px solid #2A303C',
-    },
-    td: {
-        padding: '16px',
-        fontSize: '14px',
-        color: '#C9D1D9',
-    },
-    empty: {
-        padding: '32px',
-        textAlign: 'center',
-        color: '#8B949E',
-        fontStyle: 'italic',
-    },
-    badge: {
-        padding: '4px 8px',
-        borderRadius: '12px',
-        fontSize: '12px',
-        fontWeight: '600',
-        textTransform: 'uppercase',
-    }
 };
 
 export default IncidentQueue;

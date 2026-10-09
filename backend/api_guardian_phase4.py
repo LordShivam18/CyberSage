@@ -27,10 +27,12 @@ router = APIRouter(tags=["Guardian Phase 4"])
     dependencies=[Depends(require_roles(ROLE_ADMIN, ROLE_ANALYST, ROLE_RESPONDER, ROLE_AUDITOR))],
 )
 def get_guardian_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """Provide aggregated data for the Guardian Operations Dashboard."""
-    
-    # In a real implementation we would query actual tables.
-    # For now we return the schema expected by the frontend.
+    """Provide aggregated data for the Guardian Operations Dashboard.
+
+    Slice 3: backend-grounded counts (no invented telemetry). Unavailable
+    data is returned as None so the UI can distinguish "unknown" from zero.
+    Keys from Phase 4 are preserved for compatibility.
+    """
     try:
         # Check collector health
         collectors_query = db.execute(
@@ -41,12 +43,13 @@ def get_guardian_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "agent_id": row[0],
                 "collector_type": row[1],
                 "health_state": row[2],
-                "last_event_at": row[3],
+                "last_event_at": row[3].isoformat() if hasattr(row[3], "isoformat") and row[3] else row[3],
                 "events_received": row[4]
             }
             for row in collectors_query
         ]
     except Exception:
+        db.rollback()
         collectors = []
 
     try:
@@ -59,19 +62,41 @@ def get_guardian_dashboard(db: Session = Depends(get_db)) -> Dict[str, Any]:
                 "run_id": row[0],
                 "action_type": row[1],
                 "status": row[2],
-                "created_at": row[3]
+                "created_at": row[3].isoformat() if hasattr(row[3], "isoformat") and row[3] else row[3]
             }
             for row in runs_query
         ]
     except Exception:
+        db.rollback()
         runs = []
+
+    def _count(sql: str, params: dict | None = None):
+        try:
+            row = db.execute(text(sql), params or {}).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        except Exception:
+            db.rollback()
+            return None
+
+    active_incidents = _count(
+        "SELECT COUNT(*) FROM guardian_incidents WHERE status NOT IN ('closed', 'resolved')"
+    )
+    if active_incidents is None:
+        # Fall back to NDR incidents so the dashboard stays grounded even
+        # when the Guardian incident pipeline has no rows yet.
+        active_incidents = _count(
+            "SELECT COUNT(*) FROM incidents WHERE status IN ('new', 'triaged', 'investigating', 'contained')"
+        )
+    pending_approvals = _count(
+        "SELECT COUNT(*) FROM guardian_approval_requests WHERE status = 'pending'"
+    )
 
     return {
         "status": "online",
         "collectors": collectors,
         "recent_automation_runs": runs,
-        "active_incidents_count": 0,  # placeholder
-        "pending_approvals_count": 0, # placeholder
+        "active_incidents_count": active_incidents,
+        "pending_approvals_count": pending_approvals,
     }
 
 # ── 2. Incident Workflow ─────────────────────────────────────────────
