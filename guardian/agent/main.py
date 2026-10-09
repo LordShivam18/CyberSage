@@ -16,6 +16,7 @@ Detection, approval, and remediation are NOT implemented in Phase 1.
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import signal
 import sys
@@ -25,6 +26,7 @@ from typing import Optional
 
 from guardian.agent.config import AgentConfig
 from guardian.collectors.process_monitor import ProcessMonitorCollector
+from guardian.collectors.network_monitor import NetworkMonitorCollector
 from guardian.transport.local_queue import EventQueue, QueueOverflow
 from guardian.transport.safe_url import validate_url_scheme
 from guardian.transport.sync import SyncWorker
@@ -79,9 +81,11 @@ class GuardianAgent:
         self._config = config or AgentConfig()
         self._queue: Optional[EventQueue] = None
         self._collector: Optional[ProcessMonitorCollector] = None
+        self._network_collector: Optional[NetworkMonitorCollector] = None
         self._sync_worker: Optional[SyncWorker] = None
         self._running = False
         self._start_time: Optional[float] = None
+        self._identity = None
 
     def start(self) -> None:
         """Start the Guardian agent."""
@@ -90,21 +94,45 @@ class GuardianAgent:
         # Validate configuration
         self._config.validate()
 
-        # Generate host ID if not provided
-        host_id = self._config.host_id or _generate_host_id()
+        # Protected data directory + stable identity (reused across restarts).
+        from guardian.agent import identity as _identity
+        from guardian.agent import secure_storage as _storage
 
-        # Initialize local queue
+        _storage.ensure_data_dir(self._config.data_dir)
+        host_id = self._config.host_id or _identity.generate_host_id(
+            self._config.host_hostname or platform.node()
+        )
+        self._identity = _identity.ensure_identity(
+            self._config.data_dir,
+            agent_key=self._config.agent_key,
+            host_id=host_id,
+            host_hostname=self._config.host_hostname or platform.node(),
+            agent_version=self._config.agent_version,
+        )
+        host_id = self._identity.host_id
+
+        # Resolve the queue path relative to the data dir when configured so.
+        queue_path = self._config.queue_db_path
+        if not os.path.isabs(queue_path):
+            import pathlib
+
+            candidate = str(pathlib.Path(self._config.data_dir) / pathlib.Path(queue_path).name)
+            queue_path = candidate
+
+        # Initialize local queue and recover crashed sending leases (never delete).
         self._queue = EventQueue(
-            db_path=self._config.queue_db_path,
+            db_path=queue_path,
             max_size=self._config.queue_max_size,
         )
+        recovered = self._queue.recover_expired_leases()
         logger.info(
-            "Local queue initialized (db=%s, max_size=%d)",
-            self._config.queue_db_path,
+            "Local queue initialized (db=%s, max_size=%d, leases_recovered=%d)",
+            queue_path,
             self._config.queue_max_size,
+            recovered,
         )
 
-        # Initialize collector
+        # Initialize collectors (process + network where enabled).
         self._collector = ProcessMonitorCollector(
             host_id=host_id,
             host_hostname=self._config.host_hostname or platform.node(),
@@ -112,6 +140,16 @@ class GuardianAgent:
         )
         self._collector.start()
         logger.info("Process monitor collector started.")
+        if self._config.enable_network_collector:
+            self._network_collector = NetworkMonitorCollector(
+                host_id=host_id,
+                host_hostname=self._config.host_hostname or platform.node(),
+                agent_version=self._config.agent_version,
+                provider_guid=self._config.etw_network_provider_guid,
+                provider_name=self._config.etw_network_provider_name,
+            )
+            self._network_collector.start()
+            logger.info("Network monitor collector started.")
 
         # Initialize sync worker
         self._sync_worker = SyncWorker(
@@ -122,9 +160,12 @@ class GuardianAgent:
             sync_interval=self._config.sync_interval_seconds,
             batch_size=self._config.sync_batch_size,
             timeout=self._config.sync_timeout_seconds,
+            max_batch_bytes=self._config.sync_max_batch_bytes,
+            max_backoff=self._config.sync_max_backoff_seconds,
+            lease_seconds=self._config.sending_lease_seconds,
         )
 
-        # Register agent with backend
+        # Register agent with backend (explicit agent_key; identity persisted).
         self._register_agent(host_id)
 
         # Start sync worker
@@ -172,6 +213,17 @@ class GuardianAgent:
             with urlopen(request, timeout=10) as response:  # nosec B310
                 if response.getcode() == 200:
                     logger.info("Agent registered with backend successfully.")
+                    try:
+                        data = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+                        agent = data.get("agent") if isinstance(data, dict) else None
+                        server_id = agent.get("id") if isinstance(agent, dict) else None
+                        if isinstance(server_id, int) and self._identity is not None:
+                            from guardian.agent import identity as _identity
+
+                            self._identity.server_agent_id = server_id
+                            _identity.save_identity(self._config.data_dir, self._identity)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("Agent identity persistence skipped: %s", exc)
                 else:
                     logger.warning(
                         "Agent registration returned status %d — continuing in offline mode.",
@@ -184,14 +236,20 @@ class GuardianAgent:
             )
 
     def _collect_cycle(self) -> int:
-        """Run one collection cycle.
+        """Run one collection cycle across process + network collectors.
 
-        Returns the number of events collected.
+        Returns the number of events queued (durable). Overflow and
+        per-event failures are reported explicitly; queued events are
+        never silently marked sent here.
         """
-        if not self._collector or not self._queue:
+        if not self._queue:
             return 0
 
-        events = self._collector.collect()
+        events = []
+        if self._collector:
+            events.extend(self._collector.collect())
+        if self._network_collector:
+            events.extend(self._network_collector.collect())
         if not events:
             return 0
 
@@ -202,9 +260,15 @@ class GuardianAgent:
                 if inserted:
                     count += 1
             except QueueOverflow:
+                depth = {}
+                try:
+                    depth = self._queue.queue_depth_age()
+                except Exception:  # noqa: BLE001
+                    pass
                 logger.warning(
-                    "Queue overflow — %d events will be collected but not queued.",
-                    len(events) - count,
+                    "Queue overflow — %d events not queued (depth=%s). "
+                    "Collects continue; operator must drain or expand capacity.",
+                    len(events) - count, depth,
                 )
                 break
             except Exception as exc:
@@ -314,7 +378,19 @@ class GuardianAgent:
         if self._collector:
             self._collector.stop()
 
+        if self._network_collector:
+            self._network_collector.stop()
+
         if self._queue:
+            try:
+                from guardian.agent.service import write_health_snapshot
+
+                write_health_snapshot(self._config.data_dir, {
+                    "stopped_at": time.time(),
+                    "queue": self._queue.queue_stats(),
+                })
+            except Exception:  # noqa: BLE001
+                pass
             self._queue.close()
 
         logger.info("Guardian agent stopped.")

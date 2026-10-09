@@ -818,3 +818,39 @@ class GuardianEnvelopeRun(Base):
     correlation_id = Column(String(128), nullable=True)
     created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Guardian v2 -- Phase 5 Slice 4 (additive)
+# ---------------------------------------------------------------------------
+# Explicit, narrowly scoped pre-authorization grants. One row per policy_id;
+# absence of an active row means pre-authorization is disabled (default).
+# Rows are never deleted: revocation sets active=False for audit. The
+# SafetyEnvelope reads the authoritative row per request (no caching), so
+# restarts and policy updates cannot silently preserve stale authorization.
+
+
+class GuardianPreauthGrant(Base):
+    __tablename__ = "guardian_preauth_grants"
+
+    id = Column(Integer, primary_key=True, index=True)
+    policy_id = Column(String(128), unique=True, nullable=False, index=True)
+    policy_version = Column(Integer, nullable=False)
+    active = Column(Boolean, nullable=False, default=False, index=True)
+    allowed_actions = Column(JSONType, nullable=False, default=list)
+    agent_scope = Column(JSONType, nullable=False, default=dict)
+    target_scope = Column(JSONType, nullable=False, default=dict)
+    max_risk_score = Column(Float, nullable=False, default=0.0)
+    max_executions_per_hour = Column(Integer, nullable=False, default=1)
+    cooldown_seconds = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime, nullable=True)
+    safety_gates = Column(JSONType, nullable=False, default=list)
+    rollback_required = Column(Boolean, nullable=False, default=False)
+    reason = Column(Text, nullable=True)
+    activated_by = Column(String(255), nullable=True)
+    activated_at = Column(DateTime, nullable=True)
+    revoked_by = Column(String(255), nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    revoke_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)

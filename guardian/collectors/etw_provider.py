@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 # ETW provider GUIDs
 KERNEL_PROCESS_GUID = "{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}"
 KERNEL_FILE_GUID = "{EDD08927-9CC4-4E65-B970-C2560FB5C289}"
+# Documented Microsoft-Windows-TCPIP provider (network connections).
+# Configurable per deployment; network_monitor.py is the owning caller.
+TCPIP_PROVIDER_GUID = "{2F07E2EE-15DB-40F1-90EF-9D7ABA282188}"
+TCPIP_PROVIDER_NAME = "Microsoft-Windows-TCPIP"
 
 # Availability flag — set at import time
 _ETW_AVAILABLE = False
@@ -157,3 +161,54 @@ def _copy_attr(
         if val is not None:
             dest[dest_key] = val
             return
+
+
+def create_network_trace_session(
+    callback: Callable[[Dict[str, Any]], None],
+    session_name: str = "GuardianNetworkTrace",
+    provider_guid: str = TCPIP_PROVIDER_GUID,
+    provider_name: str = TCPIP_PROVIDER_NAME,
+) -> Optional[Any]:
+    """Create an ETW trace session for network connection events.
+
+    Same lifecycle contract as create_process_trace_session. Returns None
+    when ETW is unavailable. Raises RuntimeError when session creation
+    fails on a capable host. Process attribution is attached only when
+    the event source exposes it.
+    """
+    if not _ETW_AVAILABLE:
+        logger.warning(
+            "create_network_trace_session: ETW not available (%s). Returning None.",
+            _ETW_IMPORT_ERROR,
+        )
+        return None
+    try:
+        import etw  # type: ignore[import]
+
+        def _network_callback(event: Any) -> None:
+            try:
+                raw: Dict[str, Any] = {"provider": provider_name}
+                if hasattr(event, "EventHeader"):
+                    raw["timestamp"] = getattr(event.EventHeader, "TimeStamp", None)
+                if hasattr(event, "TaskName"):
+                    raw["event_type"] = event.TaskName
+                _copy_attr(event, raw, "destination_ip", ["DestAddress", "destination_ip", "RemoteAddr"])
+                _copy_attr(event, raw, "destination_port", ["DestPort", "destination_port", "RemotePort"])
+                _copy_attr(event, raw, "source_ip", ["SourceAddress", "source_ip", "LocalAddr"])
+                _copy_attr(event, raw, "source_port", ["SourcePort", "source_port", "LocalPort"])
+                _copy_attr(event, raw, "protocol", ["Protocol", "protocol"])
+                _copy_attr(event, raw, "process_id", ["ProcessId", "process_id", "pid"])
+                _copy_attr(event, raw, "process_name", ["ProcessName", "process_name"])
+                callback(raw)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("etw_provider: error in network callback: %s", exc)
+
+        session = etw.ETW(
+            providers=[etw.ProviderInfo(provider_name, etw.GUID(provider_guid))],
+            event_callback=_network_callback,
+            session_name=session_name,
+        )
+        logger.info("etw_provider: network trace session '%s' created", session_name)
+        return session
+    except Exception as exc:
+        raise RuntimeError(f"etw_provider: failed to create network session: {exc}") from exc

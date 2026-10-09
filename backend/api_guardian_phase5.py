@@ -33,8 +33,11 @@ RBAC:
     execute: administrator, incident_responder ONLY — analysts approve,
         responders/admins execute (mirrors Phase 3 execute permissions).
 
-Slice 2 executes ONLY approved-manual requests: a valid APPROVED approval
-is mandatory. Pre-authorized execution remains disabled.
+Slice 2 executes ONLY approved-manual requests by default. Slice 4 adds
+explicitly activated, narrowly scoped bounded grants: with an active grant
+covering the request, the envelope honors the preauthorized_bounded path;
+without one, approved-manual remains mandatory. Grants are disabled by
+default and never auto-activated.
 """
 
 from __future__ import annotations
@@ -391,7 +394,8 @@ class ExecutionIn(BaseModel):
     action_name: str = Field(..., max_length=64)
     target: Dict[str, Any] = Field(default_factory=dict)
     decision_id: str = Field(..., max_length=128)
-    approval_id: str = Field(..., max_length=128)
+    approval_id: Optional[str] = Field(None, max_length=128)
+    authorization_mode: str = Field("approved_manual", max_length=32)
     risk_score: float = Field(..., ge=0.0, le=100.0)
     incident_severity: str = Field(..., max_length=32)
     incident_id: Optional[int] = None
@@ -399,6 +403,7 @@ class ExecutionIn(BaseModel):
     evaluation_id: Optional[str] = Field(None, max_length=128)
     parameters: Dict[str, Any] = Field(default_factory=dict)
     agent_key: Optional[str] = Field(None, max_length=128)
+    host_id: Optional[str] = Field(None, max_length=128)
     correlation_id: Optional[str] = Field(None, max_length=128)
 
 
@@ -422,14 +427,25 @@ def submit_execution(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    """Run an approved-manual request through the safety envelope.
+    """Run an authorized request through the safety envelope.
 
-    Requires a valid APPROVED approval (Slice 2 honors no pre-authorized
-    bypass). Idempotent: replaying an identical request returns the original
+    Slice 4 supports two authorization paths, both fully gated:
+      - approved_manual (default, Slice 2 compatible): a valid APPROVED
+        approval is mandatory.
+      - preauthorized_bounded: an active persisted grant must cover the
+        request; no approval is consumed. Kill switch, breaker, limiter,
+        target validation, verification, rollback, and audit still apply.
+    Idempotent: replaying an identical request returns the original
     execution record without re-executing (existing=True).
     """
     from guardian.automation.envelope import EnvelopeRequest, SafetyEnvelope
     from guardian.automation.policy_v5 import PolicyValidationError as _PVE
+
+    mode = (body.authorization_mode or "approved_manual").lower()
+    if mode not in ("approved_manual", "preauthorized_bounded"):
+        raise HTTPException(status_code=422, detail="authorization_mode must be approved_manual or preauthorized_bounded")
+    if mode == "approved_manual" and not body.approval_id:
+        raise HTTPException(status_code=422, detail="approval_id is required for approved_manual execution")
 
     try:
         request = EnvelopeRequest(
@@ -440,6 +456,7 @@ def submit_execution(
             target=body.target,
             decision_id=body.decision_id,
             approval_id=body.approval_id,
+            authorization_mode=mode,
             risk_score=body.risk_score,
             incident_severity=body.incident_severity,
             incident_id=body.incident_id,
@@ -447,6 +464,7 @@ def submit_execution(
             evaluation_id=body.evaluation_id,
             parameters=body.parameters,
             agent_key=body.agent_key,
+            host_id=body.host_id,
             correlation_id=body.correlation_id,
             requested_by=user.username,
         )
@@ -648,3 +666,146 @@ def list_conflicts(
             "the deterministic policy engine."
         ),
     }
+
+
+# ── Slice 4: bounded pre-authorization grants ─────────────────────────
+
+class PreauthActivateIn(BaseModel):
+    policy_id: str = Field(..., max_length=128)
+    allowed_actions: List[Dict[str, Any]] = Field(..., min_length=1, max_length=25)
+    target_scope: Dict[str, List[str]] = Field(...)
+    agent_scope: Optional[Dict[str, List[str]]] = None
+    max_risk_score: float = Field(..., ge=0.0, le=100.0)
+    max_executions_per_hour: int = Field(..., ge=1, le=1000)
+    cooldown_seconds: int = Field(..., ge=0, le=86400)
+    expires_at: str = Field(..., max_length=64)
+    reason: str = Field(..., max_length=2048)
+    rollback_required: bool = False
+
+
+class PreauthRevokeIn(BaseModel):
+    policy_id: str = Field(..., max_length=128)
+    reason: str = Field("operator revocation", max_length=2048)
+
+
+@router.post(
+    "/preauth/activate",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(ROLE_ADMIN)),
+    ],
+)
+def activate_preauth(
+    body: PreauthActivateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Activate a bounded pre-authorization grant (administrator only).
+
+    The UI must display the complete permission scope, risk cap, frequency
+    limits, cooldown, allowed actions, and expiry before calling this
+    endpoint. Activation binds the policy's current version; later policy
+    edits require re-activation. Nothing is auto-activated by migrations.
+    """
+    from guardian.automation import preauth_store as _grant_store
+    from guardian.automation.policy_v5 import PolicyValidationError as _PVE
+
+    try:
+        grant = _grant_store.activate_grant(
+            db,
+            {
+                "policy_id": body.policy_id,
+                "allowed_actions": body.allowed_actions,
+                "target_scope": body.target_scope,
+                "agent_scope": body.agent_scope or {},
+                "max_risk_score": body.max_risk_score,
+                "max_executions_per_hour": body.max_executions_per_hour,
+                "cooldown_seconds": body.cooldown_seconds,
+                "expires_at": body.expires_at,
+                "reason": body.reason,
+                "rollback_required": body.rollback_required,
+            },
+            activated_by=user.username,
+        )
+    except _PVE as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    audit_event(
+        db, "guardian_preauth_activated", "guardian_preauth",
+        body.policy_id,
+        {"policy_version": grant["policy_version"], "allowed_actions": grant["allowed_actions"],
+         "max_risk_score": grant["max_risk_score"], "expires_at": grant["expires_at"]},
+        user=user,
+    )
+    db.commit()
+    return {"status": "activated", "grant": grant}
+
+
+@router.post(
+    "/preauth/revoke",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(ROLE_ADMIN)),
+    ],
+)
+def revoke_preauth(
+    body: PreauthRevokeIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Revoke a bounded grant (administrator only). Never deletes."""
+    from guardian.automation import preauth_store as _grant_store
+    from guardian.automation.policy_v5 import PolicyValidationError as _PVE
+
+    try:
+        grant = _grant_store.revoke_grant(
+            db, body.policy_id, revoked_by=user.username, reason=body.reason
+        )
+    except _PVE as exc:
+        status = 404 if "no pre-authorization grant" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc))
+    audit_event(
+        db, "guardian_preauth_revoked", "guardian_preauth",
+        body.policy_id, {"reason": body.reason}, user=user,
+    )
+    db.commit()
+    return {"status": "revoked", "grant": grant}
+
+
+@router.get(
+    "/preauth",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(*VIEW_ROLES)),
+    ],
+)
+def list_preauth_grants(
+    active_only: bool = Query(False),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """List persisted pre-authorization grants (authoritative state)."""
+    from guardian.automation import preauth_store as _grant_store
+
+    grants = _grant_store.list_grants(db, active_only=active_only)
+    db.rollback()
+    return {"total": len(grants), "items": grants}
+
+
+@router.get(
+    "/preauth/{policy_id}",
+    dependencies=[
+        Depends(phase5_limiter),
+        Depends(require_roles(*VIEW_ROLES)),
+    ],
+)
+def get_preauth_grant(
+    policy_id: str,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Return the authoritative grant for one policy, or 404 when none."""
+    from guardian.automation import preauth_store as _grant_store
+
+    grant = _grant_store.get_grant(db, policy_id)
+    db.rollback()
+    if grant is None:
+        raise HTTPException(status_code=404, detail="No pre-authorization grant for this policy")
+    return grant

@@ -43,6 +43,7 @@ DEFAULT_DB_PATH = "guardian_queue.db"
 DEFAULT_SYNC_INTERVAL_SECONDS = 10
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_MAX_RETRIES = 5
+QUEUE_SCHEMA_VERSION = 2
 
 
 def _now_iso() -> str:
@@ -117,8 +118,26 @@ class EventQueue:
                 ON guardian_events(created_at);
             CREATE INDEX IF NOT EXISTS ix_guardian_queue_event_id
                 ON guardian_events(event_id);
+
+            CREATE TABLE IF NOT EXISTS queue_schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
             """
         )
+        # Additive guarded columns for crash-safe lease recovery (Phase 6).
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(guardian_events)").fetchall()}
+            if "lease_expires_at" not in cols:
+                conn.execute("ALTER TABLE guardian_events ADD COLUMN lease_expires_at TEXT")
+            if "byte_size" not in cols:
+                conn.execute("ALTER TABLE guardian_events ADD COLUMN byte_size INTEGER NOT NULL DEFAULT 0")
+            conn.execute(
+                "INSERT OR IGNORE INTO queue_schema_version (version, applied_at) VALUES (?, ?)",
+                (QUEUE_SCHEMA_VERSION, _now_iso()),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("EventQueue: schema upgrade guard failed: %s", exc)
         conn.commit()
 
     def enqueue(self, event_dict: Dict[str, Any]) -> bool:
@@ -159,17 +178,19 @@ class EventQueue:
 
             # Idempotent insert
             try:
+                payload = json.dumps(event_dict, default=str)
                 conn.execute(
                     """
-                    INSERT INTO guardian_events (event_id, event_data, status, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO guardian_events (event_id, event_data, status, created_at, updated_at, byte_size)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event_id,
-                        json.dumps(event_dict, default=str),
+                        payload,
                         STATE_PENDING,
                         now,
                         now,
+                        len(payload.encode("utf-8")),
                     ),
                 )
                 conn.commit()
@@ -216,17 +237,19 @@ class EventQueue:
                     continue
 
                 try:
+                    payload = json.dumps(event_dict, default=str)
                     conn.execute(
                         """
-                        INSERT INTO guardian_events (event_id, event_data, status, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO guardian_events (event_id, event_data, status, created_at, updated_at, byte_size)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
                             event_id,
-                            json.dumps(event_dict, default=str),
+                            payload,
                             STATE_PENDING,
                             now,
                             now,
+                            len(payload.encode("utf-8")),
                         ),
                     )
                     inserted += 1
@@ -237,12 +260,15 @@ class EventQueue:
 
         return {"inserted": inserted, "duplicate": duplicates, "overflow": overflow_count}
 
-    def dequeue(self, batch_size: int = DEFAULT_BATCH_SIZE) -> List[Dict[str, Any]]:
+    def dequeue(self, batch_size: int = DEFAULT_BATCH_SIZE, lease_seconds: int = 300) -> List[Dict[str, Any]]:
         """Retrieve a batch of pending events for transmission.
 
-        Marks them as 'sending' to prevent concurrent transmission.
-        Returns event dicts in FIFO order.
+        Marks them as 'sending' with a lease expiry to prevent concurrent
+        transmission. Returns event dicts in FIFO order. Leases are
+        recovered via recover_expired_leases() after a crash.
         """
+        from datetime import timedelta
+
         with self._lock:
             conn = self._get_conn()
             rows = conn.execute(
@@ -260,16 +286,52 @@ class EventQueue:
                 return []
 
             now = _now_iso()
+            lease = (datetime.now(timezone.utc) + timedelta(seconds=max(30, int(lease_seconds)))).isoformat()
             ids = [row["id"] for row in rows]
             # _build_placeholders returns only '?' and ',' — safe for f-string interpolation
             in_clause = _build_placeholders(len(ids))
             conn.execute(
-                f"UPDATE guardian_events SET status = ?, updated_at = ? WHERE id IN ({in_clause})",  # nosec B608
-                [STATE_SENDING, now] + ids,
+                f"UPDATE guardian_events SET status = ?, updated_at = ?, lease_expires_at = ? WHERE id IN ({in_clause})",  # nosec B608
+                [STATE_SENDING, now, lease] + ids,
             )
             conn.commit()
 
         return [json.loads(row["event_data"]) for row in rows]
+
+    def recover_expired_leases(self) -> int:
+        """Return crashed 'sending' rows to 'pending'. Call at startup.
+
+        Returns the number of recovered rows. Never deletes events.
+        """
+        now = _now_iso()
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.execute(
+                """
+                UPDATE guardian_events
+                SET status = ?, updated_at = ?, lease_expires_at = NULL
+                WHERE status = ? AND (lease_expires_at IS NULL OR lease_expires_at < ?)
+                """,
+                (STATE_PENDING, now, STATE_SENDING, now),
+            )
+            conn.commit()
+            if cursor.rowcount:
+                logger.warning("EventQueue: recovered %d expired sending lease(s)", cursor.rowcount)
+            return cursor.rowcount
+
+    def queue_depth_age(self) -> Dict[str, Any]:
+        """Depth and oldest-event age for health monitoring (no secrets)."""
+        with self._lock:
+            conn = self._get_conn()
+            active = conn.execute(
+                "SELECT COUNT(*), MIN(created_at) FROM guardian_events WHERE status != ?",
+                (STATE_SENT,),
+            ).fetchone()
+            return {
+                "depth_active": int(active[0] or 0),
+                "oldest_created_at": active[1],
+                "capacity": self._max_size,
+            }
 
     def mark_sent(self, event_ids: List[str]) -> int:
         """Mark events as successfully sent.

@@ -139,6 +139,18 @@ export const fetchActionRegistry = (token) =>
 export const listGuardianAudit = (token, { limit = 50, offset = 0, status } = {}) =>
     guardianFetch('/api/v1/guardian/audit', token, { params: { limit, offset, status } });
 
+export const listPreauthGrants = (token, { active_only = false } = {}) =>
+    guardianFetch(`${V5}/preauth`, token, { params: { active_only } });
+
+export const getPreauthGrant = (token, policyId) =>
+    guardianFetch(`${V5}/preauth/${encodeURIComponent(policyId)}`, token);
+
+export const activatePreauth = (token, payload) =>
+    guardianFetch(`${V5}/preauth/activate`, token, { method: 'POST', body: payload });
+
+export const revokePreauth = (token, payload) =>
+    guardianFetch(`${V5}/preauth/revoke`, token, { method: 'POST', body: payload });
+
 export const normalizePage = (data) => {
     if (!data) return { total: 0, items: [] };
     if (Array.isArray(data)) return { total: data.length, items: data };

@@ -94,11 +94,14 @@ class ExecutionMode(str, Enum):
     SIMULATION = "simulation"  # never executes (dry-run only)
     AWAITING_APPROVAL = "awaiting_approval"
     APPROVED_MANUAL = "approved_manual_execution"
-    # PRE_AUTHORIZED intentionally absent in Slice 2.
+    PREAUTHORIZED_BOUNDED = "preauthorized_bounded"
 
 
 # Ordered gate names. check_gates() always returns one result per gate in
-# this order so audit rows are comparable across runs.
+# this order so audit rows are comparable across runs. Slice 4 inserts
+# preauth_authorization between policy_authorization and approval; Slice 2
+# rows predate the gate and are forward-compatible (missing gate reads as
+# not applicable).
 GATE_ORDER = [
     "policy_active",
     "policy_version",
@@ -110,6 +113,7 @@ GATE_ORDER = [
     "cooldown",
     "target_validation",
     "policy_authorization",
+    "preauth_authorization",
     "approval",
 ]
 
@@ -182,7 +186,7 @@ class EnvelopeRequest:
     action_name: str
     target: Dict[str, Any]
     decision_id: str
-    approval_id: str
+    approval_id: Optional[str] = None
     risk_score: float = 0.0
     incident_severity: str = "low"
     incident_id: Optional[int] = None
@@ -192,6 +196,8 @@ class EnvelopeRequest:
     agent_key: Optional[str] = None
     correlation_id: Optional[str] = None
     requested_by: str = "system"
+    authorization_mode: str = "approved_manual"
+    host_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -211,6 +217,8 @@ class EnvelopeRequest:
             "agent_key": self.agent_key,
             "correlation_id": self.correlation_id,
             "requested_by": self.requested_by,
+            "authorization_mode": self.authorization_mode,
+            "host_id": self.host_id,
         }
 
 
@@ -249,11 +257,15 @@ def compute_execution_id(request: EnvelopeRequest) -> str:
     """Deterministic execution identity.
 
     Dimensions: policy_id + expected version + evaluation binding + concrete
-    action + canonical target hash + incident + decision + approval + agent
-    scope. Agent scope is included because it changes the safety verdict.
-    Correlation IDs are deliberately excluded: retries of the same authorized
-    request (new correlation) must resolve to the same execution.
+    action + canonical target hash + incident + decision + authorization
+    binding (approval or bounded grant) + agent scope. Agent scope is
+    included because it changes the safety verdict. Correlation IDs are
+    deliberately excluded: retries of the same authorized request (new
+    correlation) must resolve to the same execution.
     """
+    auth_binding = request.approval_id or ""
+    if (request.authorization_mode or "") == "preauthorized_bounded":
+        auth_binding = f"preauth:{auth_binding}" if auth_binding else "preauth:grant"
     fingerprint = json.dumps(
         {
             "policy_id": request.policy_id,
@@ -264,7 +276,9 @@ def compute_execution_id(request: EnvelopeRequest) -> str:
             "target_hash": canonical_target_hash(request.target),
             "incident_id": request.incident_id,
             "decision_id": request.decision_id,
-            "approval_id": request.approval_id,
+            "approval_id": request.approval_id or "",
+            "auth_binding": auth_binding,
+            "authorization_mode": request.authorization_mode or "approved_manual",
             "agent_key": request.agent_key or "",
         },
         sort_keys=True,
@@ -290,8 +304,15 @@ def validate_envelope_request(request: EnvelopeRequest) -> None:
         raise PolicyValidationError("target must be an object")
     if not request.decision_id or len(request.decision_id) > 128:
         raise PolicyValidationError("decision_id must be 1-128 chars")
-    if not request.approval_id or len(request.approval_id) > 128:
-        raise PolicyValidationError("approval_id is required in Slice 2 (approved manual execution only)")
+    mode = (request.authorization_mode or "approved_manual").lower()
+    if mode not in ("approved_manual", "preauthorized_bounded"):
+        raise PolicyValidationError("authorization_mode must be approved_manual or preauthorized_bounded")
+    if mode == "approved_manual":
+        if not request.approval_id or len(str(request.approval_id)) > 128:
+            raise PolicyValidationError("approval_id is required for approved_manual execution")
+    else:
+        if request.approval_id is not None and len(str(request.approval_id)) > 128:
+            raise PolicyValidationError("approval_id must be 1-128 chars when provided")
     try:
         risk = float(request.risk_score)
     except (TypeError, ValueError):
@@ -518,19 +539,61 @@ class SafetyEnvelope:
         _pass("target_validation", "target_valid")
         ctx["action"] = action
 
-        # 10. Policy authorization: deny still wins, even with an approval.
+        # 10. Policy authorization: deny still wins, even with an approval
+        # or a bounded grant.
         if fresh.decision == PolicyDecision.DENY:
             return _fail("policy_authorization", "deny_overrides_approval",
                          f"rule {fresh.matched_rule_id} denies this action")
         if rule is not None and rule.approval_mode == ApprovalMode.PRE_AUTHORIZED:
             _pass("policy_authorization", "authorized_pre_authorized_rule_noted",
-                  "pre-authorized rules still require approval in Slice 2")
+                  "pre-authorized rules still require a bounded grant or approval in Slice 4")
         else:
             _pass("policy_authorization", "authorized",
                   f"decision={fresh.decision.value} rule={fresh.matched_rule_id}")
         ctx["fresh_decision"] = fresh.decision
 
-        # 11. Approval validation (Slice 2 always requires approval).
+        # 10b. Bounded pre-authorization gate (Slice 4). Manual path records
+        # an explicit non-applicable result so audit rows stay comparable.
+        # Preauth never bypasses kill/breaker/limiter/target gates above.
+        from guardian.automation import preauth_store as _preauth_store
+
+        preauth_ok = False
+        preauth_grant = None
+        if (request.authorization_mode or "approved_manual").lower() == "preauthorized_bounded":
+            authorized, preauth_reason, grant = _preauth_store.check_grant_for_request(
+                session, policy,
+                action_type=request.action_type,
+                action_name=request.action_name,
+                target=dict(request.target),
+                risk_score=float(request.risk_score),
+                agent_key=request.agent_key,
+                host_id=request.host_id,
+                expected_policy_version=int(request.expected_policy_version),
+            )
+            preauth_grant = grant
+            if rule is None or rule.approval_mode != ApprovalMode.PRE_AUTHORIZED:
+                return _fail("preauth_authorization", "no_preauthorized_rule",
+                             f"policy has no PRE_AUTHORIZED rule for {request.action_type}:{request.action_name}")
+            if not authorized:
+                return _fail("preauth_authorization", preauth_reason,
+                             f"grant={grant.get('policy_id') if grant else 'none'}")
+            _pass("preauth_authorization", "grant_authorizes_request",
+                  f"policy={policy.policy_id} v{policy.version} risk_cap={grant.get('max_risk_score')}")
+            ctx["preauth_grant"] = grant
+            preauth_ok = True
+        else:
+            _pass("preauth_authorization", "manual_path_preauth_not_applicable",
+                  "approved_manual execution does not use a bounded grant")
+        ctx["preauth_ok"] = preauth_ok
+
+        # 11. Approval validation: required for manual path; skipped only on
+        # a fully authorized bounded-grant path.
+        if preauth_ok:
+            _pass("approval", "approval_not_required_preauthorized_bounded",
+                  "bounded grant authorizes this request; no approval consumed")
+            return gates, ctx
+        if not request.approval_id:
+            return _fail("approval", "approval_invalid", "approval_id is required for approved_manual execution")
         valid, err = self._approvals.validate_for_execution(
             session,
             approval_id=request.approval_id,
@@ -644,7 +707,7 @@ class SafetyEnvelope:
         )
         attempt = GuardianActionAttempt(
             action_id=action_id,
-            approval_id=request.approval_id,
+            approval_id=request.approval_id or f"preauth:{request.policy_id}:v{int(request.expected_policy_version)}",
             incident_id=request.incident_id,
             decision_id=request.decision_id,
             action_type=request.action_type,

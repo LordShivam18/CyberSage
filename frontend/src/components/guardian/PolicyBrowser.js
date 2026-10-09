@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     listPolicies, getPolicy, updatePolicy, setPolicyEnabled, listEvaluations, listConflicts,
+    getPreauthGrant, activatePreauth, revokePreauth,
 } from './guardianApi';
 import { formatTimestamp, statusStyle, sharedStyles as s, isExpired } from './formatters';
 
@@ -35,6 +36,19 @@ const PolicyBrowser = ({ token, role }) => {
     const [mutating, setMutating] = useState(false);
     const [message, setMessage] = useState('');
     const [editForm, setEditForm] = useState(null);
+    const [grant, setGrant] = useState(null);
+    const [grantLoading, setGrantLoading] = useState(false);
+    const [preauthForm, setPreauthForm] = useState({
+        allowed_actions: '[{"action_type": "network", "action_name": "block_destination"}]',
+        target_scope: '{"destination_ips": ["203.0.113.66"]}',
+        agent_scope: '{}',
+        max_risk_score: 80,
+        max_executions_per_hour: 5,
+        cooldown_seconds: 300,
+        expires_at: '',
+        reason: '',
+        rollback_required: false,
+    });
 
     const isAdmin = role === 'administrator';
 
@@ -83,6 +97,17 @@ const PolicyBrowser = ({ token, role }) => {
             setDetail(policy);
             setHistory({ total: evals.total ?? (evals.items || []).length, items: evals.items || [] });
             setEditForm({ name: policy.name || '', description: policy.description || '', mode: policy.mode || 'approval_required', priority: policy.priority ?? 100, expires_at: policy.expires_at || '' });
+            setGrant(null);
+            setGrantLoading(true);
+            try {
+                const existing = await getPreauthGrant(token, policyId);
+                setGrant(existing);
+            } catch (err) {
+                if (err.status !== 404) setDetailError((err.message || 'Failed to load grant state.'));
+                setGrant(null);
+            } finally {
+                setGrantLoading(false);
+            }
         } catch (err) {
             setDetailError(err.status === 404 ? 'Policy not found (HTTP 404).' : (err.message || 'Failed to load policy.'));
         } finally {
@@ -217,6 +242,81 @@ const PolicyBrowser = ({ token, role }) => {
                                 </div>
                             ))}
                             {!(history.items || []).length && <div style={s.empty}>No historical evaluations for this policy.</div>}
+
+                            <h4 style={{ color: '#E0E6ED', margin: '14px 0 8px 0' }}>Bounded pre-authorization (Slice 4)</h4>
+                            <div style={s.muted}>
+                                Disabled by default. Activation is an explicit administrator operation, persisted and audited,
+                                bound to the current policy version. Existing evaluations never gain new authorization.
+                                Kill switch overrides all authorization.
+                            </div>
+                            {grantLoading && <div style={s.muted}>Loading grant state…</div>}
+                            {!grantLoading && !grant && <div style={s.empty}>No bounded grant for this policy — pre-authorized execution is disabled; manual approval remains required.</div>}
+                            {!grantLoading && grant && (
+                                <div style={{ ...s.muted, color: '#C9D1D9', marginTop: '6px' }}>
+                                    <span style={{ ...s.badge, ...(grant.active ? { color: '#F85149', backgroundColor: 'rgba(248,81,73,0.15)' } : { color: '#8B949E', backgroundColor: 'rgba(139,148,158,0.15)' }) }}>
+                                        {grant.active ? 'grant active' : 'grant revoked/inactive'}
+                                    </span>
+                                    <div style={{ marginTop: '6px' }}>
+                                        Policy v{grant.policy_version} · risk cap {grant.max_risk_score} · {grant.max_executions_per_hour}/hour · cooldown {grant.cooldown_seconds}s · expires {grant.expires_at ? formatTimestamp(grant.expires_at) : 'n/a'}
+                                    </div>
+                                    <div>Allowed: {(grant.allowed_actions || []).map((a) => `${a.action_type}:${a.action_name}`).join(', ') || 'none'}</div>
+                                    <div>Target scope: {JSON.stringify(grant.target_scope || {})}</div>
+                                    <div>Agent scope: {JSON.stringify(grant.agent_scope || {}) || 'none'} · by {grant.activated_by || 'n/a'} at {formatTimestamp(grant.activated_at)}</div>
+                                </div>
+                            )}
+                            {isAdmin && (
+                                <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
+                                    {grant?.active && (
+                                        <button style={{ ...s.btn, ...s.btnDanger }} disabled={mutating} onClick={() => confirmAnd('Revoke bounded grant', () => revokePreauth(token, { policy_id: detail.policy_id, reason: 'operator revocation from Guardian Ops UI' }).then(() => loadDetail(detail.policy_id)))} aria-label="Revoke bounded grant">
+                                            Revoke grant
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                            {isAdmin && (
+                                <form
+                                    style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}
+                                    onSubmit={(e) => {
+                                        e.preventDefault();
+                                        let allowed;
+                                        let targetScope;
+                                        let agentScope;
+                                        try {
+                                            allowed = JSON.parse(preauthForm.allowed_actions);
+                                            targetScope = JSON.parse(preauthForm.target_scope);
+                                            agentScope = preauthForm.agent_scope.trim() ? JSON.parse(preauthForm.agent_scope) : {};
+                                        } catch (err) {
+                                            setError(`Invalid grant JSON: ${err.message}`);
+                                            return;
+                                        }
+                                        confirmAnd('Activate bounded grant', () => activatePreauth(token, {
+                                            policy_id: detail.policy_id,
+                                            allowed_actions: allowed,
+                                            target_scope: targetScope,
+                                            agent_scope: agentScope,
+                                            max_risk_score: Number(preauthForm.max_risk_score),
+                                            max_executions_per_hour: Number(preauthForm.max_executions_per_hour),
+                                            cooldown_seconds: Number(preauthForm.cooldown_seconds),
+                                            expires_at: preauthForm.expires_at,
+                                            reason: preauthForm.reason || 'bounded rollout from Guardian Ops UI',
+                                            rollback_required: Boolean(preauthForm.rollback_required),
+                                        }).then(() => loadDetail(detail.policy_id)));
+                                    }}
+                                >
+                                    <span style={s.label}>Activate bounded grant (admin only — shows full scope before activation)</span>
+                                    <label style={s.label}>Allowed actions (JSON list, concrete registered actions only, no wildcards)<textarea style={{ ...s.input, fontFamily: 'monospace' }} rows={2} value={preauthForm.allowed_actions} onChange={(e) => setPreauthForm({ ...preauthForm, allowed_actions: e.target.value })} /></label>
+                                    <label style={s.label}>Target scope (JSON, at least one key required)<textarea style={{ ...s.input, fontFamily: 'monospace' }} rows={2} value={preauthForm.target_scope} onChange={(e) => setPreauthForm({ ...preauthForm, target_scope: e.target.value })} /></label>
+                                    <label style={s.label}>Agent scope (JSON, optional)<textarea style={{ ...s.input, fontFamily: 'monospace' }} rows={2} value={preauthForm.agent_scope} onChange={(e) => setPreauthForm({ ...preauthForm, agent_scope: e.target.value })} /></label>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+                                        <label style={s.label}>Risk cap<input style={s.input} type="number" min={0} max={100} step="0.1" value={preauthForm.max_risk_score} onChange={(e) => setPreauthForm({ ...preauthForm, max_risk_score: e.target.value })} /></label>
+                                        <label style={s.label}>Max/hour<input style={s.input} type="number" min={1} max={1000} value={preauthForm.max_executions_per_hour} onChange={(e) => setPreauthForm({ ...preauthForm, max_executions_per_hour: e.target.value })} /></label>
+                                        <label style={s.label}>Cooldown (s)<input style={s.input} type="number" min={0} max={86400} value={preauthForm.cooldown_seconds} onChange={(e) => setPreauthForm({ ...preauthForm, cooldown_seconds: e.target.value })} /></label>
+                                    </div>
+                                    <label style={s.label}>Expires at (ISO, required)<input style={s.input} placeholder="2027-01-01T00:00:00Z" value={preauthForm.expires_at} onChange={(e) => setPreauthForm({ ...preauthForm, expires_at: e.target.value })} required /></label>
+                                    <label style={s.label}>Reason<input style={s.input} value={preauthForm.reason} onChange={(e) => setPreauthForm({ ...preauthForm, reason: e.target.value })} maxLength={2048} /></label>
+                                    <button style={{ ...s.btn, ...s.btnPrimary }} type="submit" disabled={mutating}>Activate bounded grant (audited)</button>
+                                </form>
+                            )}
 
                             {isAdmin && (
                                 <div style={{ display: 'flex', gap: '8px', marginTop: '14px', flexWrap: 'wrap' }}>

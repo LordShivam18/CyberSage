@@ -50,6 +50,10 @@ class AgentConfig:
     backend_url: str = field(default_factory=lambda: _str_env("GUARDIAN_BACKEND_URL", "http://localhost:8000"))
     auth_token: str = field(default_factory=lambda: _str_env("GUARDIAN_AUTH_TOKEN", ""))
 
+    # ── Local storage / identity ────────────────────────────────────────
+    data_dir: str = field(default_factory=lambda: _str_env("GUARDIAN_DATA_DIR", "guardian_data"))
+    protected_token_path: str = field(default_factory=lambda: _str_env("GUARDIAN_PROTECTED_TOKEN_PATH", ""))
+
     # ── Queue settings ────────────────────────────────────────────────
     queue_db_path: str = field(default_factory=lambda: _str_env("GUARDIAN_QUEUE_DB_PATH", "guardian_queue.db"))
     queue_max_size: int = field(default_factory=lambda: _int_env("GUARDIAN_QUEUE_MAX_SIZE", 100_000))
@@ -58,6 +62,20 @@ class AgentConfig:
     sync_interval_seconds: int = field(default_factory=lambda: _int_env("GUARDIAN_SYNC_INTERVAL", 10))
     sync_batch_size: int = field(default_factory=lambda: _int_env("GUARDIAN_SYNC_BATCH_SIZE", 100))
     sync_timeout_seconds: int = field(default_factory=lambda: _int_env("GUARDIAN_SYNC_TIMEOUT", 30))
+    sync_max_batch_bytes: int = field(default_factory=lambda: _int_env("GUARDIAN_SYNC_MAX_BATCH_BYTES", 1_048_576))
+    sync_max_backoff_seconds: int = field(default_factory=lambda: _int_env("GUARDIAN_SYNC_MAX_BACKOFF", 300))
+    sending_lease_seconds: int = field(default_factory=lambda: _int_env("GUARDIAN_SENDING_LEASE_SECONDS", 300))
+
+    # ── ETW settings ──────────────────────────────────────────────────
+    etw_process_session: str = field(default_factory=lambda: _str_env("GUARDIAN_ETW_PROCESS_SESSION", "GuardianProcessTrace"))
+    etw_network_session: str = field(default_factory=lambda: _str_env("GUARDIAN_ETW_NETWORK_SESSION", "GuardianNetworkTrace"))
+    etw_network_provider_guid: str = field(default_factory=lambda: _str_env("GUARDIAN_ETW_NETWORK_GUID", "{2F07E2EE-15DB-40F1-90EF-9D7ABA282188}"))
+    etw_network_provider_name: str = field(default_factory=lambda: _str_env("GUARDIAN_ETW_NETWORK_PROVIDER", "Microsoft-Windows-TCPIP"))
+    enable_network_collector: bool = field(default_factory=lambda: _bool_env("GUARDIAN_ENABLE_NETWORK", True))
+
+    # ── Service settings ──────────────────────────────────────────────
+    service_name: str = field(default_factory=lambda: _str_env("GUARDIAN_SERVICE_NAME", "CyberSageGuardian"))
+    shutdown_timeout_seconds: int = field(default_factory=lambda: _int_env("GUARDIAN_SHUTDOWN_TIMEOUT", 30))
 
     # ── Heartbeat settings ────────────────────────────────────────────
     heartbeat_interval_seconds: int = field(default_factory=lambda: _int_env("GUARDIAN_HEARTBEAT_INTERVAL", 30))
@@ -89,6 +107,25 @@ class AgentConfig:
             raise ValueError("GUARDIAN_SYNC_BATCH_SIZE must be positive")
         if self.sync_timeout_seconds < 1:
             raise ValueError("GUARDIAN_SYNC_TIMEOUT must be positive")
+        if self.sync_max_batch_bytes < 4096 or self.sync_max_batch_bytes > 16_777_216:
+            raise ValueError("GUARDIAN_SYNC_MAX_BATCH_BYTES must be 4096-16777216")
+        if self.sync_max_backoff_seconds < 5 or self.sync_max_backoff_seconds > 3600:
+            raise ValueError("GUARDIAN_SYNC_MAX_BACKOFF must be 5-3600 seconds")
+        if self.sending_lease_seconds < 30 or self.sending_lease_seconds > 3600:
+            raise ValueError("GUARDIAN_SENDING_LEASE_SECONDS must be 30-3600 seconds")
+        if self.shutdown_timeout_seconds < 5 or self.shutdown_timeout_seconds > 300:
+            raise ValueError("GUARDIAN_SHUTDOWN_TIMEOUT must be 5-300 seconds")
+        for label, path in (("GUARDIAN_DATA_DIR", self.data_dir), ("GUARDIAN_QUEUE_DB_PATH", self.queue_db_path)):
+            if not path or ".." in path.replace("\\", "/").split("/"):
+                raise ValueError(f"{label} must not be empty or contain '..'")
+            if "\x00" in path:
+                raise ValueError(f"{label} must not contain NUL")
+        if self.etw_network_provider_guid and (
+            len(self.etw_network_provider_guid) > 64 or ".." in self.etw_network_provider_guid
+        ):
+            raise ValueError("GUARDIAN_ETW_NETWORK_GUID is invalid")
+        if not self.service_name or len(self.service_name) > 64:
+            raise ValueError("GUARDIAN_SERVICE_NAME must be 1-64 chars")
         if self.heartbeat_interval_seconds < 5:
             raise ValueError("GUARDIAN_HEARTBEAT_INTERVAL must be at least 5 seconds")
 

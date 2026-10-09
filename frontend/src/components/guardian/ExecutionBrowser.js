@@ -119,6 +119,14 @@ const ExecutionBrowser = ({ token }) => {
                                 <span style={s.muted}>State</span><span><span style={{ ...s.badge, ...statusStyle(detail.status) }}>{detail.status}</span></span>
                                 <span style={s.muted}>Error / reason</span><strong>{detail.error || 'none recorded'}</strong>
                                 <span style={s.muted}>Created / updated</span><strong>{formatTimestamp(detail.created_at)} / {formatTimestamp(detail.updated_at)}</strong>
+                                <span style={s.muted}>Authorization path</span><strong>{(() => {
+                                    const gates = detail.gates || detail.gate_results || [];
+                                    const pre = gates.find((g) => g.gate === 'preauth_authorization');
+                                    const ap = gates.find((g) => g.gate === 'approval');
+                                    if (pre?.passed && pre?.reason === 'grant_authorizes_request') return 'preauthorized_bounded (bounded grant; no approval consumed)';
+                                    if (ap?.passed) return `approved_manual (${ap.reason})`;
+                                    return 'blocked / not authorized (see failing gate)';
+                                })()}</strong>
                             </div>
 
                             <h4 style={{ color: '#E0E6ED', margin: '12px 0 6px 0' }}>Safety gates (ordered, auditable)</h4>
