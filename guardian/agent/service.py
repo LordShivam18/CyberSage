@@ -23,7 +23,7 @@ import platform
 import threading
 import time
 from pathlib import Path
-from typing Any, Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 

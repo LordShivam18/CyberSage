@@ -15,7 +15,7 @@ their OS effects.
 
 from __future__ import annotations
 
-from typing Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from guardian.actions.base import (
     BaseAction,

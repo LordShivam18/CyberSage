@@ -14,7 +14,7 @@ touches production systems.
 
 from __future__ import annotations
 
-from typing Any, Dict, List
+from typing import Any, Dict, List
 
 # Scenario inventory. scenario_id values are stable correlation keys:
 # e2e-<slug>. Fixture events carry the scenario id in evidence so the

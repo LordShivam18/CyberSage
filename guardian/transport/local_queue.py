@@ -418,6 +418,28 @@ class EventQueue:
             conn.commit()
             return cursor.rowcount
 
+    def purge_failed(self, older_than_hours: int = 168) -> int:
+        """Remove quarantined (permanently failed) events older than the window.
+
+        Quarantined rows are kept 7 days by default for reconciliation before
+        any deletion. Returns the number purged. Never touches pending/sending.
+        """
+        if older_than_hours < 24:
+            raise ValueError("purge_failed window must be at least 24 hours")
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None)
+        from datetime import timedelta
+        cutoff = cutoff - timedelta(hours=older_than_hours)
+        cutoff_iso = cutoff.isoformat()
+
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "DELETE FROM guardian_events WHERE status = ? AND updated_at < ?",
+                (STATE_FAILED, cutoff_iso),
+            )
+            conn.commit()
+            return cursor.rowcount
+
     def queue_stats(self) -> Dict[str, Any]:
         """Return current queue statistics."""
         with self._lock:

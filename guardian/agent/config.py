@@ -75,6 +75,10 @@ class AgentConfig:
 
     # ── Service settings ──────────────────────────────────────────────
     service_name: str = field(default_factory=lambda: _str_env("GUARDIAN_SERVICE_NAME", "CyberSageGuardian"))
+    service_account: str = field(default_factory=lambda: _str_env("GUARDIAN_SERVICE_ACCOUNT", r"NT SERVICE\CyberSageGuardian"))
+    service_dependencies: str = field(default_factory=lambda: _str_env("GUARDIAN_SERVICE_DEPENDENCIES", ""))
+    program_dir: str = field(default_factory=lambda: _str_env("GUARDIAN_PROGRAM_DIR", ""))
+    log_dir: str = field(default_factory=lambda: _str_env("GUARDIAN_LOG_DIR", ""))
     shutdown_timeout_seconds: int = field(default_factory=lambda: _int_env("GUARDIAN_SHUTDOWN_TIMEOUT", 30))
 
     # ── Heartbeat settings ────────────────────────────────────────────
@@ -126,6 +130,16 @@ class AgentConfig:
             raise ValueError("GUARDIAN_ETW_NETWORK_GUID is invalid")
         if not self.service_name or len(self.service_name) > 64:
             raise ValueError("GUARDIAN_SERVICE_NAME must be 1-64 chars")
+        if not self.service_account or len(self.service_account) > 128:
+            raise ValueError("GUARDIAN_SERVICE_ACCOUNT must be 1-128 chars")
+        if len(self.service_dependencies) > 512:
+            raise ValueError("GUARDIAN_SERVICE_DEPENDENCIES must be at most 512 chars")
+        for label, path in (("GUARDIAN_PROGRAM_DIR", self.program_dir), ("GUARDIAN_LOG_DIR", self.log_dir)):
+            if path:
+                if ".." in path.replace("\\", "/").split("/"):
+                    raise ValueError(f"{label} must not contain '..'")
+                if "\x00" in path:
+                    raise ValueError(f"{label} must not contain NUL")
         if self.heartbeat_interval_seconds < 5:
             raise ValueError("GUARDIAN_HEARTBEAT_INTERVAL must be at least 5 seconds")
 
