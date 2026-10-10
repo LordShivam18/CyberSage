@@ -73,23 +73,24 @@ def _identity_path(data_dir: str) -> Path:
     return Path(data_dir) / IDENTITY_FILENAME
 
 
-def _restrict_file(path: Path) -> None:
-    try:
-        if os.name == "nt":
-            # Restrict via Windows ACLs: administrators + system + owner.
-            # Implemented with icacls to avoid new dependencies; failures
-            # are logged and surfaced by the caller health check.
-            import subprocess
+def _restrict_file(path: Path) -> bool:
+    """Apply restrictive ACLs with verified access. Returns True when restricted.
 
-            subprocess.run(
-                ["icacls", str(path), "/inheritance:r", "/grant:r",
-                 f"{os.getenv('USERNAME', 'Administrators')}:F", "SYSTEM:F", "Administrators:F"],
-                capture_output=True, timeout=15,
-            )
-        else:
-            os.chmod(path, 0o600)
+    Delegates to the shared, verified helper so identity files can never be
+    stranded unreadable: False means inherited ACLs were kept with a warning.
+    """
+    if os.name != "nt":
+        return True
+    try:
+        from guardian.agent.secure_storage import apply_windows_acl
+
+        if apply_windows_acl(path):
+            return True
+        logger.warning("identity: keeping inherited ACLs on %s (restriction unverified)", path)
+        return False
     except Exception as exc:  # noqa: BLE001
         logger.warning("identity: could not restrict %s: %s", path, exc)
+        return False
 
 
 def load_identity(data_dir: str) -> Optional[AgentIdentity]:
@@ -110,14 +111,39 @@ def load_identity(data_dir: str) -> Optional[AgentIdentity]:
 
 
 def save_identity(data_dir: str, identity: AgentIdentity) -> Path:
-    """Persist identity atomically with restrictive permissions."""
+    """Persist identity atomically with verified restrictive permissions.
+
+    The temp file is restricted and verified BEFORE the atomic replace, so
+    the final file is never left stranded: either it carries verified
+    restrictive ACLs or it keeps usable inherited ACLs with a warning.
+    """
     directory = Path(data_dir)
     directory.mkdir(parents=True, exist_ok=True)
     path = _identity_path(data_dir)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(identity.to_dict(), indent=2), encoding="utf-8")
+    restricted = _restrict_file(tmp)
+    if not restricted:
+        # Defense in depth: never replace a good file with a stranded temp
+        # file. If the temp file itself is unreadable (rollback unverified),
+        # drop it and fail loudly so startup reports the cause instead of
+        # booting with a missing identity.
+        try:
+            with tmp.open("rb"):
+                pass
+        except OSError as exc:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise OSError(
+                f"identity: refusing to replace {path}: temp file unreadable "
+                f"after ACL handling ({exc}); manual recovery: icacls {path} /reset"
+            )
+        logger.warning(
+            "identity: %s persisted with inherited ACLs (restriction unverified; "
+            "see protection status)", path)
     os.replace(tmp, path)
-    _restrict_file(path)
     try:
         if os.name != "nt":
             os.chmod(path, 0o600)

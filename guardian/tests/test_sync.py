@@ -43,7 +43,13 @@ _mock_state = _MockState()
 
 
 class MockBackendHandler(BaseHTTPRequestHandler):
-    """Minimal HTTP handler for testing sync."""
+    """Minimal HTTP handler for testing sync.
+
+    Default 200 responses echo the actual per-event acknowledgement schema
+    (``{"results": [{"event_id", "status": "created"}]}``) because production
+    sync honors only per-event acknowledgements — HTTP 200 alone never
+    proves persistence. Error-code overrides bypass the body entirely.
+    """
 
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
@@ -56,7 +62,19 @@ class MockBackendHandler(BaseHTTPRequestHandler):
         self.send_response(_mock_state.response_code)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(_mock_state.response_body.encode())
+        body = _mock_state.response_body
+        if _mock_state.response_code == 200 and body == '{"status":"ok"}':
+            try:
+                received = json.loads(_mock_state.last_request_body or b"{}")
+                events = received.get("events", [])
+            except ValueError:
+                events = []
+            body = json.dumps({"results": [
+                {"event_id": event.get("event_id"), "status": "created"}
+                for event in events
+                if isinstance(event, dict) and event.get("event_id")
+            ]})
+        self.wfile.write(body.encode())
 
     def log_message(self, format, *args):
         pass  # Suppress logs during tests

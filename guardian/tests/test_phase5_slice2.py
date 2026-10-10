@@ -286,12 +286,17 @@ def test_gate_order_is_mandated(db_session):
         "policy_active", "policy_version", "identity",
         "kill_switch_global", "kill_switch_scoped",
         "circuit_breaker", "rate_limit", "cooldown",
-        "target_validation", "policy_authorization", "approval",
+        "target_validation", "policy_authorization",
+        "preauth_authorization", "approval",
     ]
     assert GATE_ORDER.index("kill_switch_global") < GATE_ORDER.index("circuit_breaker")
     assert GATE_ORDER.index("circuit_breaker") < GATE_ORDER.index("rate_limit")
     assert GATE_ORDER.index("rate_limit") < GATE_ORDER.index("target_validation")
     assert GATE_ORDER.index("target_validation") < GATE_ORDER.index("approval")
+    # Slice 4: bounded-grant authorization is gated after policy
+    # authorization and before approval; kill-switch precedence is unchanged.
+    assert GATE_ORDER.index("policy_authorization") < GATE_ORDER.index("preauth_authorization")
+    assert GATE_ORDER.index("preauth_authorization") < GATE_ORDER.index("approval")
 
 
 def test_all_gates_reported_in_order_on_success(db_session, mock_net_action):
@@ -302,9 +307,15 @@ def test_all_gates_reported_in_order_on_success(db_session, mock_net_action):
         "policy_active", "policy_version", "identity",
         "kill_switch_global", "kill_switch_scoped",
         "circuit_breaker", "rate_limit", "cooldown",
-        "target_validation", "policy_authorization", "approval",
+        "target_validation", "policy_authorization",
+        "preauth_authorization", "approval",
     ]
     assert all(g["passed"] for g in result.gates)
+    # Manual path records the bounded-grant gate as not applicable without
+    # consuming any grant; approval still carries the authorization.
+    preauth_gate = next(g for g in result.gates if g["gate"] == "preauth_authorization")
+    assert preauth_gate["passed"] is True
+    assert preauth_gate["reason"] == "manual_path_preauth_not_applicable"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -723,10 +734,17 @@ def test_pre_authorized_rule_still_requires_approval(db_session, mock_net_action
     request = make_request(db_session, policy_id="p-pre", decision_id="dec-pre",
                            approval_id=approval_id, correlation_id="c-pre")
     result = SafetyEnvelope().run(db_session, request, actor="responder-1")
-    # Slice 2 executes only with approval; the gate must note the deferral.
+    # Manual path executes only with approval; the gate must note the deferral.
+    # Slice 4 intentionally changed this wording; the approval requirement itself
+    # is preserved below, and the bounded-grant path is gated separately.
     assert result.status == "succeeded", result.error
     auth_gate = next(g for g in result.gates if g["gate"] == "policy_authorization")
-    assert "Slice 2" in (auth_gate.get("detail") or "")
+    assert "Slice 4" in (auth_gate.get("detail") or "")
+    # A manual request must not be confused with a bounded grant: without an
+    # active grant the preauth gate passes as not-applicable and approval decides.
+    preauth_gate = next(g for g in result.gates if g["gate"] == "preauth_authorization")
+    assert preauth_gate["passed"] is True
+    assert preauth_gate["reason"] == "manual_path_preauth_not_applicable"
     # And without any approval the request is invalid (approval_id required).
     bad = make_request(db_session, policy_id="p-pre", decision_id="dec-pre",
                        approval_id="", correlation_id="c-pre-2")
@@ -841,7 +859,7 @@ def test_audit_row_complete(db_session, mock_net_action):
     assert row.rule_id == "r-exec" and row.evaluation_id == evaluation_id
     assert row.approval_id == approval_id and row.actor == "responder-1"
     assert row.action_type == "network" and row.target["destination_ip"] == "203.0.113.66"
-    assert len(row.gate_results) == 11
+    assert len(row.gate_results) == 12
     assert row.execution_result is not None and row.verification is not None
     assert row.incident_id == 7 and row.event_ids == ["evt-1"]
     assert row.correlation_id == "corr-audit" and row.created_at is not None

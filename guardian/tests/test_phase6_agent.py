@@ -83,3 +83,72 @@ def test_sync_parses_per_event_acknowledgement():
     assert acked == ["e1", "e2"] and quarantined == []
     with pytest.raises(Exception):
         SyncWorker._parse_acknowledgement("{}", ["e1"])
+
+
+class _CompletedProcess:
+    def __init__(self, returncode=0):
+        self.returncode = returncode
+        self.stdout = b""
+        self.stderr = b""
+
+
+def test_acl_failure_rolls_back_and_keeps_file_usable(tmp_path, monkeypatch):
+    """Unit logic only (subprocess mocked): a failed icacls must not strand the file.
+
+    Live Windows ACL behavior remains human-verified on a disposable host.
+    """
+    import os as _os
+
+    if _os.name != "nt":
+        pytest.skip("Windows ACL path")
+    import subprocess as _subprocess
+
+    from guardian.agent import secure_storage as storage_mod
+
+    calls = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _CompletedProcess(returncode=1)
+
+    monkeypatch.setattr(_subprocess, "run", _fake_run)
+    target = tmp_path / "identity.json"
+    target.write_text("{}", encoding="utf-8")
+    assert storage_mod.apply_windows_acl(target) is False
+    assert target.read_text(encoding="utf-8") == "{}"
+
+
+def test_acl_success_path_is_verified(tmp_path, monkeypatch):
+    """Unit logic only (subprocess mocked): success requires verified access."""
+    import os as _os
+
+    if _os.name != "nt":
+        pytest.skip("Windows ACL path")
+    import subprocess as _subprocess
+
+    from guardian.agent import secure_storage as storage_mod
+
+    monkeypatch.setattr(_subprocess, "run", lambda cmd, **kwargs: _CompletedProcess(returncode=0))
+    target = tmp_path / "identity.json"
+    target.write_text("{}", encoding="utf-8")
+    assert storage_mod.apply_windows_acl(target) is True
+
+
+def test_save_identity_never_strands_file_when_acl_fails(tmp_path, monkeypatch):
+    """Unit logic only: restriction applies to the temp file before replace."""
+    import os as _os
+
+    if _os.name != "nt":
+        pytest.skip("Windows ACL path")
+    import subprocess as _subprocess
+
+    from guardian.agent import identity as identity_mod
+
+    monkeypatch.setattr(_subprocess, "run", lambda cmd, **kwargs: _CompletedProcess(returncode=1))
+    saved = identity_mod.ensure_identity(
+        str(tmp_path), agent_key="agent-acl", host_id="host-acl",
+        host_hostname="acl-host",
+    )
+    assert saved.agent_key == "agent-acl"
+    reloaded = identity_mod.ensure_identity(str(tmp_path), agent_key="agent-acl")
+    assert reloaded.host_id == "host-acl"

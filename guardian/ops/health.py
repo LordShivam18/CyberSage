@@ -89,7 +89,7 @@ def compose_agent_snapshot(*, identity: Dict[str, Any], version: str,
                         "stable identity present" if identity.get("agent_key") else "identity missing"),
         ComponentHealth("config", "healthy" if config_valid else "fatal", (config_error or "")[:300]),
         ComponentHealth("collectors",
-                        "healthy" if all((item.get("health") or item.get("status")) == "running" for item in collectors)
+                        "healthy" if collectors and all((item.get("health") or item.get("status")) == "running" for item in collectors)
                         else ("degraded" if collectors else "unready"),
                         f"{len(collectors)} collector(s) reporting"),
         ComponentHealth("queue",

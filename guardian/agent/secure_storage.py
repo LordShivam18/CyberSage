@@ -66,18 +66,106 @@ def ensure_data_dir(path: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     try:
         if os.name == "nt":
-            import subprocess
-
-            subprocess.run(
-                ["icacls", str(directory), "/inheritance:r", "/grant:r",
-                 "SYSTEM:F", "Administrators:F", f"{os.getenv('USERNAME', 'Administrators')}:F"],
-                capture_output=True, timeout=15,
-            )
+            if not apply_windows_acl(directory):
+                logger.warning(
+                    "secure_storage: keeping inherited ACLs on %s "
+                    "(restriction unverified; see protection status)", directory)
         else:
             os.chmod(directory, 0o700)
     except Exception as exc:  # noqa: BLE001
         logger.warning("secure_storage: could not restrict %s: %s", directory, exc)
     return directory
+
+
+def _current_user_principal() -> str:
+    """Resolve the current process identity for ACL grants.
+
+    getpass.getuser() reflects the process token environment; the raw
+    USERNAME variable alone has proven unreliable (alias/UPN formats that
+    icacls cannot map to the process SID, stranding the file).
+    """
+    try:
+        import getpass
+
+        name = getpass.getuser()
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    fallback = os.getenv("USERNAME", "Administrators")
+    return fallback.strip() or "Administrators"
+
+
+def _verify_access(path: Path) -> bool:
+    """Prove the current process can still use the path (no secrets logged)."""
+    try:
+        target = Path(path)
+        if target.is_dir():
+            probe = target / ".acl_probe"
+            probe.write_text("probe", encoding="utf-8")
+            probe.read_text(encoding="utf-8")
+            probe.unlink()
+        else:
+            with target.open("rb"):
+                pass
+        return True
+    except OSError:
+        return False
+
+
+def apply_windows_acl(path: Path) -> bool:
+    """Apply restrictive Windows ACLs and verify current-process access.
+
+    Grants the resolved process principal plus SYSTEM and Administrators
+    with inheritance removed, then PROVES the current process can still
+    use the path (read for files; create/read/delete probe for dirs).
+    On any failure — bad return code or failed verification — inheritance
+    is restored via ``icacls /reset`` and False is returned so the caller
+    keeps usable inherited ACLs with an explicit warning instead of a
+    stranded file. Never raises for ACL problems. Non-Windows returns True
+    (callers apply POSIX modes separately).
+    """
+    if os.name != "nt":
+        return True
+    import subprocess
+
+    target = Path(path)
+    principal = _current_user_principal()
+    try:
+        result = subprocess.run(
+            ["icacls", str(target), "/inheritance:r", "/grant:r",
+             f"{principal}:F", "SYSTEM:F", "Administrators:F"],
+            capture_output=True, timeout=15,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("secure_storage: icacls did not run for %s: %s", target, exc)
+        return False
+    if result.returncode != 0:
+        logger.warning(
+            "secure_storage: icacls rejected principal %s for %s (rc=%d); "
+            "keeping inherited ACLs", principal, target, result.returncode)
+        return False
+    if _verify_access(target):
+        return True
+    logger.warning(
+        "secure_storage: access verification failed for %s after ACL change; "
+        "restoring inherited ACLs", target)
+    rollback_verified = False
+    try:
+        reset = subprocess.run(["icacls", str(target), "/reset"],
+                               capture_output=True, timeout=15)
+        # The rollback itself is CHECKED, not assumed: re-verify access and
+        # require a clean return code before reporting inherited ACLs.
+        rollback_verified = reset.returncode == 0 and _verify_access(target)
+    except Exception as reset_exc:  # noqa: BLE001
+        logger.warning("secure_storage: ACL rollback failed for %s: %s", target, reset_exc)
+    if rollback_verified:
+        logger.warning("secure_storage: inherited ACLs restored and verified for %s", target)
+    else:
+        logger.error(
+            "secure_storage: ACL rollback UNVERIFIED for %s; manual intervention "
+            "required (icacls <path> /reset)", target)
+    return False
 
 
 def protect_secret(plaintext: str) -> str:

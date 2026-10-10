@@ -80,7 +80,8 @@ def test_config_redaction_and_production_gate(monkeypatch):
     redacted = to_redacted_dict(config)
     assert redacted["auth_token"] == "***REDACTED***"
     missing = validate_production(config)
-    assert any("HTTPS" in item or "AUTH" in item for item in missing)
+    # Capitalization is not part of the contract; match case-insensitively.
+    assert any("https" in item.lower() or "auth" in item.lower() for item in missing)
 
 
 def test_config_migration_rejects_unknown_keys():
